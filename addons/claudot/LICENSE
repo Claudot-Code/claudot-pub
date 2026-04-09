@@ -1,0 +1,43 @@
+Claudot Source-Available License v1.0
+
+Copyright (c) 2026 Ryan Rinkel. All rights reserved.
+
+Permission is granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to use,
+copy, modify, and run the Software for any purpose, including within
+commercial projects, subject to the following conditions:
+
+1. ATTRIBUTION
+   The above copyright notice and this license shall be included in all
+   copies or substantial portions of the Software.
+
+2. NO REDISTRIBUTION FOR COMMERCIAL GAIN
+   You may not sell, sublicense, or distribute the Software or any
+   derivative work as a standalone product or service, or as a substantial
+   component of a paid product or service, without a separate written
+   commercial license from the copyright holder.
+
+3. NO COMPETING PRODUCTS
+   You may not use the Software as the basis for a product or service that
+   competes directly with Claudot (an AI assistant integration for the
+   Godot game engine) without a separate written commercial license from
+   the copyright holder.
+
+4. MODIFICATIONS
+   You may modify the Software for your own use. Modified versions may not
+   be publicly distributed under terms that conflict with this license.
+
+5. RESERVATION OF RIGHTS
+   All rights not expressly granted here are reserved by the copyright
+   holder, including the right to offer the Software under different terms
+   at any time.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+
+For commercial licensing inquiries: ryan.r.rinkel@gmail.com
