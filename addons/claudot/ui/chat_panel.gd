@@ -32,6 +32,7 @@ var console_tab: VBoxContainer  # ConsoleTab instance
 var is_working: bool = false
 var _intermediate_text_shown: bool = false
 var _ask_user_via_hook: bool = false  # True when chat/ask_user_question arrived (hook path)
+var _last_ctx_pct: float = 0.0  # Last known context window usage percentage
 var clear_tab_button: Button  # Anchor-overlaid in tab bar
 
 
@@ -282,8 +283,13 @@ func _on_connection_state_changed(state: int) -> void:
 
 	# Update status label text and color based on connection state
 	if state == TCPClient.ConnectionState.CONNECTED:
-		status_label.text = "Ready"
-		status_label.modulate = Color("#8ec07c")  # Green
+		if _last_ctx_pct > 0.0:
+			var color := Color("#fb4934") if _last_ctx_pct > 75.0 else (Color("#fabd2f") if _last_ctx_pct > 50.0 else Color("#8ec07c"))
+			status_label.text = "Ready [%s%% ctx]" % str(snapped(_last_ctx_pct, 0.1))
+			status_label.modulate = color
+		else:
+			status_label.text = "Ready"
+			status_label.modulate = Color("#8ec07c")  # Green
 		connect_button.text = "Connected"
 		connect_button.disabled = true
 
@@ -293,6 +299,7 @@ func _on_connection_state_changed(state: int) -> void:
 		connect_button.disabled = true
 
 	elif state == TCPClient.ConnectionState.DISCONNECTED:
+		_last_ctx_pct = 0.0
 		status_label.text = "Disconnected"
 		status_label.modulate = Color("#cc241d")  # Red
 		connect_button.text = "Connect"
@@ -327,13 +334,20 @@ func _on_message_received(message: Dictionary) -> void:
 
 	# Check for chat/response method (bridge sends responses this way)
 	if message.get("method") == "chat/response":
-		# Update context usage from final response if available
+		# Extract context usage before clearing working state
+		var ctx_pct: float = 0.0
 		if message.has("params") and message.params is Dictionary and message.params.has("usage"):
 			var usage = message.params.get("usage", {})
 			if usage is Dictionary and usage.has("context_pct"):
-				conversation_tab.update_context_usage(usage.get("context_pct", 0.0))
+				ctx_pct = usage.get("context_pct", 0.0)
 		is_working = false
 		conversation_tab.set_working(false)
+		# Show context usage persistently in status label
+		if ctx_pct > 0.0:
+			_last_ctx_pct = ctx_pct
+			var color := Color("#fb4934") if ctx_pct > 75.0 else (Color("#fabd2f") if ctx_pct > 50.0 else Color("#8ec07c"))
+			status_label.text = "Ready [%s%% ctx]" % str(snapped(ctx_pct, 0.1))
+			status_label.modulate = color
 		if message.has("params") and message.params is Dictionary and message.params.has("content"):
 			var content = message.params.content
 			# Only display if intermediate text was NOT already shown (simple single-turn response)

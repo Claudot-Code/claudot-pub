@@ -141,6 +141,12 @@ func _handle_call_tool(body: String, peer: StreamPeerTCP) -> Dictionary:
 		"stop_scene":
 			result = scene_tools.stop_scene(tool_args)
 
+		"get_classdb_class_list":
+			result = scene_tools.get_classdb_class_list(tool_args)
+
+		"get_classdb_class_docs":
+			result = scene_tools.get_classdb_class_docs(tool_args)
+
 		_:
 			result = {
 				"success": false,
@@ -240,6 +246,14 @@ func _handle_list_tools(peer: StreamPeerTCP) -> Dictionary:
 			{
 				"name": "stop_scene",
 				"description": "Stop the currently running game scene in the Godot editor"
+			},
+			{
+				"name": "get_classdb_class_list",
+				"description": "Get all class names from Godot's built-in ClassDB (no network needed)"
+			},
+			{
+				"name": "get_classdb_class_docs",
+				"description": "Get structured docs (methods, properties, signals, constants) for a class from ClassDB"
 			}
 		]
 	}

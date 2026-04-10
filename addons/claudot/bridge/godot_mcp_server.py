@@ -10,7 +10,7 @@
 """
 Godot MCP Server - Standalone FastMCP server for Claude Code integration.
 
-Provides 17 MCP tools for Godot scene manipulation and test execution:
+Provides 20 MCP tools for Godot scene manipulation, test execution, and docs lookup:
 - Scene state inspection (get_scene_state, get_editor_context)
 - Node property access (get_node_property, set_node_property)
 - Node tree manipulation (create_node, delete_node, reparent_node)
@@ -22,11 +22,13 @@ Provides 17 MCP tools for Godot scene manipulation and test execution:
 - Test execution (run_tests - fully functional, runs godot --headless)
 - Interactive input (request_user_input, get_pending_input_answer)
 - Game control (run_scene, stop_scene)
+- Godot 4 class reference (godot_search_docs, godot_get_class_docs, godot_refresh_docs)
 
 Architecture:
 - Standalone MCP server with stdio transport (discoverable by Claude Code)
 - Scene tools (1-12) communicate via HTTP bridge using /mcp/invoke endpoint
 - Test tool (13) executes directly via subprocess (no bridge needed)
+- Docs tools (18-20) fetch from GitHub and cache locally (no bridge needed)
 """
 
 import asyncio
@@ -60,6 +62,15 @@ except ImportError as e:
     logger.error(f"Failed to import dependencies: {e}")
     logger.error("Install with: pip install fastmcp>=3.0.0 httpx>=0.27.0")
     sys.exit(1)
+
+# Godot docs module (same directory — no bridge dependency)
+try:
+    from godot_docs import search_docs, get_class_docs, refresh_docs
+except ImportError as e:
+    logger.warning(f"godot_docs module not available: {e}")
+    search_docs = None
+    get_class_docs = None
+    refresh_docs = None
 
 # Initialize FastMCP server
 mcp = FastMCP("godot")
@@ -908,9 +919,207 @@ async def stop_scene() -> dict:
     return result
 
 
+# Tool 18: Search Godot docs
+@mcp.tool()
+async def godot_search_docs(query: str, kind: str = "") -> str:
+    """
+    Search the Godot 4 class reference for accurate method signatures, property names,
+    and signal names. Use this BEFORE writing GDScript that involves a Godot built-in
+    class you are not certain about — especially for physics bodies, UI controls, and
+    any class added or changed in Godot 4. Prevents hallucinated API calls.
+
+    Args:
+        query: Class name, method, property, or keyword to search for (e.g. "move_and_slide", "CharacterBody2D", "tween")
+        kind: Optional filter — "class", "method", "property", "signal", "constant"
+
+    Returns top 10 matches with class name, symbol type, and description snippet.
+    """
+    logger.info(f"godot_search_docs called: query={query!r}, kind={kind!r}")
+
+    if search_docs is None:
+        return "ERROR: godot_docs module not available. Check that godot_docs.py is in the same directory as godot_mcp_server.py."
+
+    results = await search_docs(query, kind)
+
+    if not results:
+        return f"No results found for '{query}'" + (f" (kind={kind})" if kind else "")
+
+    # Check for error result
+    if len(results) == 1 and "error" in results[0]:
+        return f"ERROR: {results[0]['error']}"
+
+    lines = [f"Search results for '{query}'" + (f" [kind={kind}]" if kind else "") + ":\n"]
+    for entry in results:
+        kind_str = entry.get("kind", "")
+        class_name = entry.get("class_name", "")
+        name = entry.get("name", "")
+        brief = entry.get("brief", "")
+
+        if kind_str == "class":
+            symbol = class_name
+        else:
+            symbol = f"{class_name}.{name}"
+
+        line = f"  [{kind_str}] {symbol}"
+        if brief and brief != "(not yet fetched)":
+            line += f" — {brief}"
+        lines.append(line)
+
+    return "\n".join(lines)
+
+
+# Tool 19: Get full class docs
+@mcp.tool()
+async def godot_get_class_docs(class_name: str, section: str = "all") -> str:
+    """
+    Get complete documentation for a Godot 4 class including inheritance chain, methods
+    with full signatures, properties with types and defaults, signals, and constants.
+    Use when you need exact method signatures, parameter types, return types, or property
+    defaults. Always prefer this over guessing when implementing features involving
+    built-in Godot classes.
+
+    Args:
+        class_name: The Godot class name (e.g. "Node2D", "CharacterBody2D", "Timer")
+        section: Which section — "all", "methods", "properties", "signals", "constants", "description"
+    """
+    logger.info(f"godot_get_class_docs called: class_name={class_name!r}, section={section!r}")
+
+    if get_class_docs is None:
+        return "ERROR: godot_docs module not available. Check that godot_docs.py is in the same directory as godot_mcp_server.py."
+
+    data = await get_class_docs(class_name, section)
+
+    if "error" in data:
+        return f"ERROR: {data['error']}"
+
+    lines: list[str] = []
+
+    # Header: name + inheritance chain
+    chain = data.get("inheritance_chain", [])
+    if chain:
+        lines.append(f"# {class_name}")
+        lines.append(f"Inherits: {' < '.join(chain[1:])}" if len(chain) > 1 else "Inherits: (none)")
+    else:
+        lines.append(f"# {class_name}")
+
+    version = data.get("version", "")
+    if version:
+        lines.append(f"Godot version: {version}")
+
+    lines.append("")
+
+    # Brief description
+    brief = data.get("brief_description", "")
+    if brief:
+        lines.append(brief)
+        lines.append("")
+
+    # Description section
+    if section in ("all", "description"):
+        desc = data.get("description", "")
+        if desc:
+            lines.append("## Description")
+            lines.append(desc)
+            lines.append("")
+
+    # Methods section
+    if section in ("all", "methods"):
+        methods = data.get("methods", [])
+        if methods:
+            lines.append("## Methods")
+            for m in methods:
+                params_str = ", ".join(
+                    f"{p['type']} {p['name']}" + (f" = {p['default']}" if p.get("default") else "")
+                    for p in m.get("params", [])
+                )
+                qualifiers = m.get("qualifiers", "")
+                sig = f"{m['return_type']} {m['name']}({params_str})"
+                if qualifiers:
+                    sig += f" {qualifiers}"
+                lines.append(f"  {sig}")
+                if m.get("description"):
+                    lines.append(f"    {m['description'][:120]}")
+            lines.append("")
+
+    # Properties section
+    if section in ("all", "properties"):
+        members = data.get("members", [])
+        if members:
+            lines.append("## Properties")
+            for mem in members:
+                default = mem.get("default", "")
+                prop_line = f"  {mem['type']} {mem['name']}"
+                if default:
+                    prop_line += f" = {default}"
+                lines.append(prop_line)
+                if mem.get("description"):
+                    lines.append(f"    {mem['description'][:120]}")
+            lines.append("")
+
+    # Signals section
+    if section in ("all", "signals"):
+        signals = data.get("signals", [])
+        if signals:
+            lines.append("## Signals")
+            for sig in signals:
+                params_str = ", ".join(
+                    f"{p['type']} {p['name']}" for p in sig.get("params", [])
+                )
+                lines.append(f"  {sig['name']}({params_str})")
+                if sig.get("description"):
+                    lines.append(f"    {sig['description'][:120]}")
+            lines.append("")
+
+    # Constants section
+    if section in ("all", "constants"):
+        constants = data.get("constants", [])
+        if constants:
+            lines.append("## Constants")
+            enums = data.get("enums", {})
+            shown_in_enum: set[str] = set()
+
+            # Show enums grouped
+            for enum_name, enum_consts in enums.items():
+                lines.append(f"  enum {enum_name}:")
+                for c in enum_consts:
+                    lines.append(f"    {c['name']} = {c['value']}")
+                    shown_in_enum.add(c["name"])
+
+            # Remaining standalone constants
+            for c in constants:
+                if c["name"] not in shown_in_enum:
+                    lines.append(f"  {c['name']} = {c['value']}")
+            lines.append("")
+
+    return "\n".join(lines)
+
+
+# Tool 20: Refresh docs cache
+@mcp.tool()
+async def godot_refresh_docs(version: str = "") -> str:
+    """
+    Force refresh of cached Godot 4 documentation. Use if docs seem outdated or if you
+    need docs for a specific Godot version. Clears cache and re-downloads from GitHub.
+
+    Args:
+        version: Godot version tag (e.g. "4.4-stable"). Leave empty for latest stable.
+    """
+    logger.info(f"godot_refresh_docs called: version={version!r}")
+
+    if refresh_docs is None:
+        return "ERROR: godot_docs module not available. Check that godot_docs.py is in the same directory as godot_mcp_server.py."
+
+    result = await refresh_docs(version)
+
+    if result.get("status") == "error":
+        return f"ERROR: {result.get('message', 'Unknown error')}"
+
+    return result.get("message", f"Docs refreshed for Godot {result.get('version', 'unknown')}")
+
+
 # Entry point
 if __name__ == "__main__":
     logger.info("Starting Godot MCP Server")
     logger.info("Transport: stdio (discoverable by Claude Code)")
-    logger.info("Tools: 17 (scene state, properties, node manipulation, file search, screenshots, debugger output, debugger errors, script reading, tests, interactive input, game control)")
+    logger.info("Tools: 20 (scene state, properties, node manipulation, file search, screenshots, debugger output, debugger errors, script reading, tests, interactive input, game control, godot docs)")
     mcp.run()

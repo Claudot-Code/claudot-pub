@@ -289,6 +289,9 @@ func _ensure_claude_code_permissions() -> void:
 		"mcp__claudot__get_pending_input_answer",
 		"mcp__claudot__run_scene",
 		"mcp__claudot__stop_scene",
+		"mcp__claudot__godot_search_docs",
+		"mcp__claudot__godot_get_class_docs",
+		"mcp__claudot__godot_refresh_docs",
 	]
 
 	# Read existing settings or start fresh

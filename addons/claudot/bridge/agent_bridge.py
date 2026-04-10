@@ -30,6 +30,8 @@ import time
 from pathlib import Path
 from typing import Optional
 
+import re
+
 import anyio
 from claude_agent_sdk import (
     ClaudeSDKClient,
@@ -44,7 +46,118 @@ from claude_agent_sdk import (
 
 logger = logging.getLogger(__name__)
 
-_CONTEXT_WINDOW_TOKENS = 200000  # Claude model context window
+# ---------------------------------------------------------------------------
+# Godot docs auto-injection helpers
+# ---------------------------------------------------------------------------
+
+try:
+    from godot_docs import (
+        get_known_classes,
+        load_cached_class,
+        format_concise_docs,
+        FALLBACK_VERSION as GODOT_DOCS_VERSION,
+        resolve_method_to_class,
+        GODOT4_GOTCHAS,
+        get_gotcha_notes,
+        init_from_classdb,
+    )
+    _GODOT_DOCS_AVAILABLE = True
+except ImportError:
+    _GODOT_DOCS_AVAILABLE = False
+    logger.warning("godot_docs not available — class doc auto-injection disabled")
+
+# Lazy-loaded set of known Godot class names (populated from cache on first use)
+_godot_class_names: set[str] = set()
+_godot_class_names_loaded: bool = False
+_godot_class_names_version: int = 0  # Bumped when ClassDB init refreshes the cache
+
+_CAMEL_CASE_RE = re.compile(r'\b([A-Z][a-zA-Z0-9]*(?:2D|3D)?)\b')
+_SNAKE_CASE_METHOD_RE = re.compile(r'\b([a-z][a-z0-9]*(?:_[a-z0-9]+)+)\b')
+
+
+def _detect_all_godot_classes(
+    text: str,
+    context: dict,
+    max_classes: int = 5
+) -> tuple[list[tuple[str, str]], list[str]]:
+    """
+    4-layer Godot class detection for doc injection.
+
+    Layer 1: Scene context — extract node types from editor context dict.
+    Layer 2: CamelCase class names in message text.
+    Layer 3: snake_case method name resolution via resolve_method_to_class.
+    Layer 4: Godot 3-to-4 gotcha notes (independent of class cap).
+
+    Returns:
+        - List of (class_name, source_label) tuples, capped at max_classes, deduped.
+        - List of gotcha note strings.
+    """
+    global _godot_class_names, _godot_class_names_loaded
+    if not _GODOT_DOCS_AVAILABLE:
+        return [], []
+    try:
+        if not _godot_class_names_loaded:
+            _godot_class_names = get_known_classes(GODOT_DOCS_VERSION)
+            _godot_class_names_loaded = True
+
+        seen: set[str] = set()
+        result: list[tuple[str, str]] = []
+
+        def _add(cls: str, label: str) -> None:
+            if cls not in seen and cls in _godot_class_names:
+                seen.add(cls)
+                result.append((cls, label))
+
+        # Layer 1: Scene context — extract node types from context dict
+        if context:
+            root_type = context.get("scene_root_type", "")
+            if root_type:
+                _add(root_type, "From scene")
+            for node in context.get("selected_nodes", []):
+                node_type = node.get("type", "")
+                if node_type:
+                    _add(node_type, "From scene")
+
+        # Layer 2: CamelCase class names in message text
+        for match in _CAMEL_CASE_RE.finditer(text):
+            token = match.group(1)
+            _add(token, "Detected")
+
+        # Layer 3: snake_case method name resolution
+        for match in _SNAKE_CASE_METHOD_RE.finditer(text):
+            if len(result) >= max_classes:
+                break
+            method_name = match.group(1)
+            owner_class = resolve_method_to_class(method_name)
+            if owner_class:
+                _add(owner_class, "Method lookup")
+
+        # Layer 4: Gotcha notes (independent of class cap)
+        gotcha_notes = get_gotcha_notes(text)
+
+        return result[:max_classes], gotcha_notes
+    except Exception:
+        return [], []
+
+
+# Context window sizes by model family (prefix match)
+# Claude Code CLI uses 1M context for Opus/Sonnet 4.x by default
+_MODEL_CONTEXT_WINDOWS = {
+    "claude-opus-4":   1_000_000,
+    "claude-sonnet-4": 1_000_000,
+    "claude-haiku-4":    200_000,
+    "claude-3-5":        200_000,
+    "claude-3-opus":     200_000,
+}
+_DEFAULT_CONTEXT_WINDOW = 200_000
+
+
+def _context_window_for_model(model_id: str) -> int:
+    """Return context window token count for a model ID via prefix match."""
+    for prefix, tokens in _MODEL_CONTEXT_WINDOWS.items():
+        if model_id.startswith(prefix):
+            return tokens
+    return _DEFAULT_CONTEXT_WINDOW
 
 _BUILTIN_COMMANDS = {"/clear", "/compact", "/cost", "/help", "/memory",
                      "/model", "/permissions", "/plan", "/review", "/status", "/vim"}
@@ -208,6 +321,8 @@ class AgentBridge:
         self._query_queue: asyncio.Queue = asyncio.Queue()
         self._permission_queue: asyncio.Queue = asyncio.Queue()
         self._session_allowed_tools: set[str] = set()
+        self._context_window_tokens: int = _context_window_for_model(model)
+        self._detected_model: Optional[str] = None
 
         # Setup logging
         self._setup_logging()
@@ -410,6 +525,7 @@ class AgentBridge:
         self._query_queue = asyncio.Queue()
         self._permission_queue = asyncio.Queue()
         self._session_allowed_tools = set()
+        self._detected_model = None
         self._plan_mode = False
 
         # Configure Claude Agent SDK options with PreToolUse hook for AskUserQuestion
@@ -434,6 +550,30 @@ class AgentBridge:
         async with ClaudeSDKClient(options=options) as client:
             logger.info("Claude session established")
 
+            # Log server info for diagnostics (model/context info discovery)
+            try:
+                server_info = await client.get_server_info()
+                if server_info:
+                    logger.info(f"Server info keys: {list(server_info.keys())}")
+            except Exception:
+                pass
+
+            # Initialize Godot class docs from ClassDB (populates class list for
+            # auto-injection detection — all classes available from first message)
+            if _GODOT_DOCS_AVAILABLE:
+                try:
+                    global _godot_class_names_loaded, _godot_class_names_version
+                    success = await init_from_classdb()
+                    if success:
+                        # Force reload of class names set on next detection call
+                        _godot_class_names_loaded = False
+                        _godot_class_names_version += 1
+                        logger.info("ClassDB doc cache initialized — full class detection enabled")
+                    else:
+                        logger.debug("ClassDB init skipped (bridge not ready) — using cached class list")
+                except Exception as e:
+                    logger.debug(f"ClassDB init error (non-fatal): {e}")
+
             # Send initial system message
             await self.tcp_connection.send_message({
                 "jsonrpc": "2.0",
@@ -449,16 +589,16 @@ class AgentBridge:
 
     def _build_prompt_with_context(self, content: str, context: dict) -> str:
         """
-        Build prompt with Godot editor context.
+        Build prompt with Godot editor context and auto-injected class API docs.
 
         Args:
             content: User's message
             context: Editor context (scene path, selected nodes)
 
         Returns:
-            Enhanced prompt with context
+            Enhanced prompt with context and optional Godot API reference block
         """
-        # Slash commands must pass through verbatim - no context wrapping
+        # Slash commands must pass through verbatim — no context wrapping or doc injection
         if content.lstrip().startswith("/"):
             return content
 
@@ -472,30 +612,72 @@ class AgentBridge:
             )
             content = plan_instruction + content
 
+        # Build the prompt body (context + message)
         if not context:
-            return content
+            prompt = content
+        else:
+            context_parts = []
 
-        context_parts = []
+            if "scene_path" in context:
+                context_parts.append(f"Current scene: {context['scene_path']}")
 
-        if "scene_path" in context:
-            context_parts.append(f"Current scene: {context['scene_path']}")
+            if "scene_root_name" in context:
+                context_parts.append(f"Scene root: {context['scene_root_name']} ({context.get('scene_root_type', 'Node')})")
 
-        if "scene_root_name" in context:
-            context_parts.append(f"Scene root: {context['scene_root_name']} ({context.get('scene_root_type', 'Node')})")
+            if "selected_nodes" in context and context["selected_nodes"]:
+                context_parts.append("Selected nodes:")
+                for node in context["selected_nodes"]:
+                    node_info = f"  - {node['path']} ({node['type']})"
+                    if "script" in node:
+                        node_info += f" [script: {node['script']}]"
+                    context_parts.append(node_info)
 
-        if "selected_nodes" in context and context["selected_nodes"]:
-            context_parts.append("Selected nodes:")
-            for node in context["selected_nodes"]:
-                node_info = f"  - {node['path']} ({node['type']})"
-                if "script" in node:
-                    node_info += f" [script: {node['script']}]"
-                context_parts.append(node_info)
+            if context_parts:
+                context_str = "\n".join(context_parts)
+                prompt = f"**Current Godot Editor Context:**\n{context_str}\n\n**User Message:**\n{content}"
+            else:
+                prompt = content
 
-        if context_parts:
-            context_str = "\n".join(context_parts)
-            return f"**Current Godot Editor Context:**\n{context_str}\n\n**User Message:**\n{content}"
+        # Auto-inject Godot class reference via 4-layer detection
+        try:
+            detected, gotcha_notes = _detect_all_godot_classes(content, context)
+            if detected or gotcha_notes:
+                docs_parts: list[str] = []
+                for cls_name, source_label in detected:
+                    cls_data = load_cached_class(GODOT_DOCS_VERSION, cls_name)
+                    if cls_data and "error" not in cls_data:
+                        formatted = format_concise_docs(cls_data)
+                        # Replace the ### header to include source label
+                        formatted = formatted.replace(
+                            f"### {cls_name}",
+                            f"### [{source_label}] {cls_name}",
+                            1
+                        )
+                        docs_parts.append(formatted)
 
-        return content
+                injection_lines: list[str] = []
+                if docs_parts:
+                    header = (
+                        "## Godot API Reference (auto-injected)\n"
+                        "*Injected based on scene context and message content. "
+                        "Authoritative — prefer over training data.*\n"
+                    )
+                    injection_lines.append(header)
+                    injection_lines.append("\n\n".join(docs_parts))
+
+                if gotcha_notes:
+                    injection_lines.append("")
+                    injection_lines.append("**Godot 4 notes:**")
+                    injection_lines.extend(gotcha_notes)
+
+                if injection_lines:
+                    docs_block = "\n---\n" + "\n".join(injection_lines) + "\n---\n\n"
+                    # Prepend so Claude sees it before the user message / context
+                    prompt = docs_block + prompt
+        except Exception:
+            pass  # Graceful degradation — never block message send
+
+        return prompt
 
     async def _stream_response_to_godot(self, client: ClaudeSDKClient):
         """
@@ -515,6 +697,11 @@ class AgentBridge:
 
         async for message in client.receive_response():
             if isinstance(message, AssistantMessage):
+                # Detect context window from first response's model name
+                if not self._detected_model and message.model:
+                    self._detected_model = message.model
+                    self._context_window_tokens = _context_window_for_model(message.model)
+                    logger.info(f"Detected model: {message.model} → context window: {self._context_window_tokens:,} tokens")
                 # Complete message available
                 for block in message.content:
                     if isinstance(block, TextBlock):
@@ -542,22 +729,6 @@ class AgentBridge:
             elif isinstance(message, SystemMessage):
                 # System events (can log these)
                 logger.debug(f"System event: {message.subtype}")
-                # Forward usage data if present
-                if message.data and ("input_tokens" in message.data or "output_tokens" in message.data):
-                    input_t = message.data.get("input_tokens", 0)
-                    output_t = message.data.get("output_tokens", 0)
-                    total = input_t + output_t
-                    pct = round((total / _CONTEXT_WINDOW_TOKENS) * 100, 1) if _CONTEXT_WINDOW_TOKENS > 0 else 0
-                    await self.tcp_connection.send_message({
-                        "jsonrpc": "2.0",
-                        "method": "chat/usage_update",
-                        "params": {
-                            "input_tokens": input_t,
-                            "output_tokens": output_t,
-                            "total_tokens": total,
-                            "context_pct": pct
-                        }
-                    })
 
             elif isinstance(message, ResultMessage):
                 # Final result - conversation turn complete
@@ -572,7 +743,7 @@ class AgentBridge:
                         "input_tokens": input_t,
                         "output_tokens": output_t,
                         "total_tokens": total,
-                        "context_pct": round((total / _CONTEXT_WINDOW_TOKENS) * 100, 1)
+                        "context_pct": round((total / self._context_window_tokens) * 100, 1)
                     }
                 await self.tcp_connection.send_message({
                     "jsonrpc": "2.0",

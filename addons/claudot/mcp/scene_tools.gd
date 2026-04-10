@@ -1021,6 +1021,194 @@ func stop_scene(params: Dictionary) -> Dictionary:
 	}
 
 
+func get_classdb_class_list(params: Dictionary) -> Dictionary:
+	## Return all class names registered in ClassDB.
+	##
+	## Uses the running Godot editor's ClassDB — always matches the exact engine version.
+	## No network required.
+	##
+	## @param params: {} (no required params)
+	## @return: {"success": bool, "classes": Array[String], "count": int, "godot_version": String}
+
+	var class_list: PackedStringArray = ClassDB.get_class_list()
+	var sorted_list: Array[String] = []
+	for cls in class_list:
+		sorted_list.append(str(cls))
+	sorted_list.sort()
+
+	return {
+		"success": true,
+		"classes": sorted_list,
+		"count": sorted_list.size(),
+		"godot_version": Engine.get_version_info().get("string", "unknown"),
+		"timestamp": Time.get_unix_time_from_system()
+	}
+
+
+func get_classdb_class_docs(params: Dictionary) -> Dictionary:
+	## Get structured documentation for a single class from ClassDB.
+	##
+	## Returns method signatures, properties, signals, and constants in the
+	## same format as the XML doc parser so the Python cache layer can use it
+	## interchangeably with GitHub-sourced docs.
+	##
+	## @param params: {"class_name": String}
+	## @return: Structured class docs dict or error
+
+	var cls: String = params.get("class_name", "")
+
+	if cls.is_empty():
+		return _error("class_name parameter is required")
+
+	if not ClassDB.class_exists(cls):
+		return _error("Class '%s' not found in ClassDB" % cls)
+
+	var result: Dictionary = {
+		"success": true,
+		"name": cls,
+		"inherits": str(ClassDB.get_parent_class(cls)),
+		"brief_description": "",
+		"description": "",
+		"methods": [],
+		"members": [],
+		"signals": [],
+		"constants": [],
+		"enums": {},
+		"source": "classdb",
+		"godot_version": Engine.get_version_info().get("string", "unknown"),
+		"timestamp": Time.get_unix_time_from_system()
+	}
+
+	# --- Methods (own class only, no inheritance) ---
+	var methods: Array = ClassDB.class_get_method_list(cls, true)
+	for method_info: Dictionary in methods:
+		var method_name: String = str(method_info.get("name", ""))
+
+		var return_info: Dictionary = method_info.get("return", {})
+		var return_type: String = _get_type_name_from_info(return_info)
+
+		var params_list: Array = []
+		var args: Array = method_info.get("args", [])
+		var default_args: Array = method_info.get("default_args", [])
+		var default_start: int = args.size() - default_args.size()
+
+		for j in range(args.size()):
+			var arg: Dictionary = args[j]
+			var param_entry: Dictionary = {
+				"name": str(arg.get("name", "")),
+				"type": _get_type_name_from_info(arg),
+				"default": ""
+			}
+			if j >= default_start and j - default_start < default_args.size():
+				param_entry["default"] = str(default_args[j - default_start])
+			params_list.append(param_entry)
+
+		result["methods"].append({
+			"name": method_name,
+			"qualifiers": "",
+			"return_type": return_type,
+			"params": params_list,
+			"description": ""
+		})
+
+	# --- Properties (members) — own class only ---
+	var properties: Array = ClassDB.class_get_property_list(cls, true)
+	for prop_info: Dictionary in properties:
+		var prop_name: String = str(prop_info.get("name", ""))
+		var usage: int = prop_info.get("usage", 0)
+
+		# Include only real properties (storage or editor visible)
+		if not (usage & (PROPERTY_USAGE_STORAGE | PROPERTY_USAGE_EDITOR)):
+			continue
+
+		# Skip category/group/subgroup markers
+		if usage & PROPERTY_USAGE_CATEGORY or usage & PROPERTY_USAGE_GROUP or usage & PROPERTY_USAGE_SUBGROUP:
+			continue
+
+		if prop_name.is_empty():
+			continue
+
+		result["members"].append({
+			"name": prop_name,
+			"type": _get_type_name_from_info(prop_info),
+			"default": "",
+			"setter": "",
+			"getter": "",
+			"description": ""
+		})
+
+	# --- Signals — own class only ---
+	var signals_list: Array = ClassDB.class_get_signal_list(cls, true)
+	for signal_info: Dictionary in signals_list:
+		var signal_name: String = str(signal_info.get("name", ""))
+		var signal_params: Array = []
+		for arg: Dictionary in signal_info.get("args", []):
+			signal_params.append({
+				"name": str(arg.get("name", "")),
+				"type": _get_type_name_from_info(arg)
+			})
+		result["signals"].append({
+			"name": signal_name,
+			"params": signal_params,
+			"description": ""
+		})
+
+	# --- Enums — own class only ---
+	var enum_list: PackedStringArray = ClassDB.class_get_enum_list(cls, true)
+	for enum_name: String in enum_list:
+		var enum_constants: PackedStringArray = ClassDB.class_get_enum_constants(cls, enum_name, true)
+		result["enums"][str(enum_name)] = []
+		for const_name: String in enum_constants:
+			var value: int = ClassDB.class_get_integer_constant(cls, const_name)
+			var const_entry: Dictionary = {
+				"name": str(const_name),
+				"value": str(value),
+				"enum": str(enum_name),
+				"description": ""
+			}
+			result["constants"].append(const_entry)
+			result["enums"][str(enum_name)].append(const_entry)
+
+	# --- Non-enum constants — own class only ---
+	var all_constants: PackedStringArray = ClassDB.class_get_integer_constant_list(cls, true)
+	var enum_const_names: Dictionary = {}
+	for ec: Dictionary in result["constants"]:
+		enum_const_names[ec["name"]] = true
+
+	for const_name: String in all_constants:
+		if str(const_name) in enum_const_names:
+			continue
+		var value: int = ClassDB.class_get_integer_constant(cls, const_name)
+		result["constants"].append({
+			"name": str(const_name),
+			"value": str(value),
+			"enum": "",
+			"description": ""
+		})
+
+	return result
+
+
+func _get_type_name_from_info(info: Dictionary) -> String:
+	## Convert a ClassDB type info dict to a human-readable type string.
+	##
+	## Handles Object types (returns class_name) and Variant types (returns type_string).
+	var type_int: int = info.get("type", TYPE_NIL)
+	var class_name_str: String = str(info.get("class_name", ""))
+
+	if type_int == TYPE_OBJECT and not class_name_str.is_empty():
+		return class_name_str
+
+	if type_int == TYPE_NIL:
+		# For return types, NIL with no usage typically means void
+		var usage: int = info.get("usage", 0)
+		if usage == 0:
+			return "void"
+		return "Variant"
+
+	return type_string(type_int)
+
+
 func _error(message: String) -> Dictionary:
 	## Create an error result dictionary and notify.
 	_notify_error(message)
