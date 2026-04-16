@@ -26,6 +26,7 @@ var status_label: Label
 var connect_button: Button
 var context_scene_check: CheckBox
 var context_selection_check: CheckBox
+var context_docs_check: CheckBox
 var tab_container: TabContainer
 var conversation_tab: VBoxContainer  # ConversationTab instance
 var console_tab: VBoxContainer  # ConsoleTab instance
@@ -110,6 +111,13 @@ func _build_ui() -> void:
 	context_selection_check.button_pressed = true
 	context_selection_check.add_theme_font_size_override("font_size", 10)
 	info_bar.add_child(context_selection_check)
+
+	context_docs_check = CheckBox.new()
+	context_docs_check.name = "DocsCheck"
+	context_docs_check.text = "Docs"
+	context_docs_check.button_pressed = false
+	context_docs_check.add_theme_font_size_override("font_size", 10)
+	info_bar.add_child(context_docs_check)
 
 	var spacer = Control.new()
 	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -245,6 +253,10 @@ func send_message(text: String) -> void:
 
 	# Display user message in conversation tab
 	conversation_tab.append_message("user", text)
+
+	# Append docs instruction if checkbox is checked
+	if context_docs_check.button_pressed:
+		text += "\n\n[IMPORTANT: Before responding, use godot_get_class_docs to look up documentation for EVERY Godot class referenced in or needed for this request. Do not skip any class.]"
 
 	# Gather editor context based on checkbox states
 	var params = {"content": text}

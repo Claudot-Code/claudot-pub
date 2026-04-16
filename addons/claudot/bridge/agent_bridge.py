@@ -368,16 +368,10 @@ class AgentBridge:
         PreToolUse hook for AskUserQuestion tool calls.
 
         Intercepts AskUserQuestion before it executes, sends the questions to Godot
-        via TCP, then blocks until Godot sends back the user's answer. Returns a
-        deny decision with the answer as the reason so Claude sees the user's selection.
-
-        Args:
-            hook_input: PreToolUseHookInput dict with tool_name, tool_input, tool_use_id
-            tool_use_id: The tool use ID for this call
-            context: Hook context from the SDK
-
-        Returns:
-            SyncHookJSONOutput dict denying the tool with the user's answer as reason
+        via TCP, then blocks until Godot sends back the user's answer. The tool must
+        be denied (to prevent the real CLI-based AskUserQuestion from executing), but
+        additionalContext carries the user's answer so Claude treats it as a successful
+        interaction rather than a rejection.
         """
         questions = hook_input["tool_input"]["questions"]
         await self.tcp_connection.send_message({
@@ -391,7 +385,8 @@ class AgentBridge:
             "hookSpecificOutput": {
                 "hookEventName": "PreToolUse",
                 "permissionDecision": "deny",
-                "permissionDecisionReason": f"User selected: {answer}"
+                "permissionDecisionReason": "Tool handled by Godot UI — answer provided via additionalContext.",
+                "additionalContext": f"The user answered your question via the Godot chat interface. Their response: {answer}"
             }
         }
 
