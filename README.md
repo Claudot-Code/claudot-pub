@@ -12,10 +12,10 @@
 |---|---|
 | **Godot 4.2+** | [godotengine.org](https://godotengine.org/download) |
 | **Claude Code** | [claude.ai/code](https://claude.ai/code) -- run `claude` once to complete OAuth login |
-| **uv** | `winget install astral-sh.uv` (Windows) / `brew install uv` (macOS) / [docs.astral.sh/uv](https://docs.astral.sh/uv/getting-started/installation/) |
+| **Python 3.10+** or **uv** | [python.org](https://www.python.org/downloads/) or [docs.astral.sh/uv](https://docs.astral.sh/uv/getting-started/installation/) |
 | **Git** (Windows only) | [git-scm.com](https://git-scm.com/download/win) |
 
-> **Note:** If uv is not installed, Claudot falls back to `python`/`python3` on PATH (3.10+). You'll need to install dependencies manually: `pip install claude-agent-sdk anyio fastmcp httpx`.
+Claudot needs either **uv** or **Python** to run its bridge daemon. It checks for uv first, then falls back to python/python3 on PATH. Either works -- dependencies are installed automatically in both cases.
 
 ### Install
 
@@ -162,45 +162,6 @@ All scene modifications support **Ctrl+Z undo**.
 /root/Parent/Child
 /root/Main/Player/Sprite2D
 ```
-
----
-
-## Architecture
-
-```
-                        Claude Code CLI
-                             |
-                  .mcp.json  |
-                             |
-                ┌────────────▼────────────┐
-                │    godot_mcp_server.py   │
-                │    (Python, FastMCP)     │
-                └────────────┬────────────┘
-                             │ HTTP
-                ┌────────────▼────────────┐
-                │      Godot Plugin       │
-                │   (HTTP Server + Scene  │
-                │    Tools, port ~7778)   │
-                └─────────────────────────┘
-
-                ┌─────────────────────────┐
-                │    agent_bridge.py       │
-                │  (Python, Claude Agent   │◄─── TCP ───┐
-                │   SDK)                   │             │
-                └─────────────────────────┘             │
-                                              ┌─────────┴─────────┐
-                                              │   Godot Plugin    │
-                                              │   (Chat Panel +   │
-                                              │    TCP Client)    │
-                                              └───────────────────┘
-```
-
-**Two communication paths:**
-
-- **MCP tools** (Claude Code CLI): Claude discovers `godot_mcp_server.py` via `.mcp.json`. The MCP server calls Godot's HTTP endpoint to execute scene tools.
-- **In-editor chat** (Chat Panel): The panel connects to `agent_bridge.py` via TCP. The bridge maintains a persistent Claude session and streams responses back.
-
-Ports are derived from a hash of your project path, so multiple Godot projects can run Claudot simultaneously without conflicts.
 
 ---
 
