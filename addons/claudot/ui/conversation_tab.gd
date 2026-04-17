@@ -667,7 +667,7 @@ func _build_ui() -> void:
 
 	stop_button = Button.new()
 	stop_button.name = "StopButton"
-	stop_button.text = "\u{1F6D1}"
+	stop_button.text = "Stop"
 	stop_button.tooltip_text = "Stop Claude (interrupt)"
 	stop_button.visible = false
 	stop_button.pressed.connect(_on_stop_pressed)

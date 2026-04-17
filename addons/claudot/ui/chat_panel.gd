@@ -13,7 +13,7 @@ const ConversationStorage = preload("res://addons/claudot/ui/conversation_storag
 const TCPClient = preload("res://addons/claudot/network/tcp_client.gd")
 const ContextProvider = preload("res://addons/claudot/mcp/context_provider.gd")
 
-const CLAUDOT_VERSION = "v2.3.0-beta"
+const CLAUDOT_VERSION = "v2.3-beta"
 const CLAUDOT_RELEASES_URL = "https://github.com/claudot-dev/claudot/releases"
 
 # Reference to TCP client (set by plugin before entering tree)
