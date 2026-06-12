@@ -1,15 +1,29 @@
 # Claudot Bridge Daemon
 
-The bridge daemon connects the Godot editor to Claude AI using the Claude Agent SDK.
+The bridge daemon connects the Godot editor to an AI chat backend. Three
+backends are supported, selected at runtime by the Godot plugin via the
+`chat/configure` message:
+
+| Backend | Module | Auth | Tools |
+|---|---|---|---|
+| `claude-code` (default) | Claude Agent SDK → Claude Code CLI | CLI OAuth login, or `ANTHROPIC_API_KEY` if provided | Full Claude Code (files, bash, MCP) |
+| `anthropic` | `providers.py` → Anthropic Messages API | API key (required) | Godot scene/docs tools via HTTP bridge |
+| `openai` / `custom` | `providers.py` → any OpenAI-compatible `/chat/completions` | API key (and base URL for `custom`) | Godot scene/docs tools via HTTP bridge |
+
+The `anthropic` backend fully supports **Claude Fable 5** (always-on thinking,
+refusal stop reason, 1M context) as well as Opus 4.8/4.7/4.6, Sonnet 4.6, and
+Haiku 4.5, with prompt caching enabled for cost efficiency.
 
 ## Architecture
 
 ```
 Godot Editor (chat panel)
-    ↓ TCP (port 7777)
-Bridge Daemon (Python)
-    ├─→ Claude Agent SDK (persistent conversation session)
-    └─→ MCP Tools (7 scene manipulation tools)
+    ↓ TCP (per-project port, chat/* JSON-RPC)
+Bridge Daemon (agent_bridge.py)
+    ├─→ Claude Agent SDK (claude-code backend, persistent session)
+    └─→ Direct providers (providers.py)
+            ├─→ Anthropic Messages API  /  OpenAI-compatible endpoint
+            └─→ Godot scene tools (godot_tools.py → HTTP :7778 → editor)
 ```
 
 ## Features
@@ -39,22 +53,20 @@ This installs:
 - `claude-agent-sdk` - Claude Agent SDK for Python
 - `fastmcp` - MCP server framework (used by Agent SDK)
 
-### 2. Configure API Key
+### 2. Configure Provider & API Key
 
-The Agent SDK requires an Anthropic API key:
+No manual configuration is required for the default `claude-code` backend —
+it uses Claude Code's own OAuth login (`~/.claude`).
 
-```bash
-# Linux/Mac
-export ANTHROPIC_API_KEY="sk-ant-..."
+For bring-your-own-key providers, use **Settings** in the Godot chat panel.
+The plugin stores keys in Godot's editor settings (outside the project) and
+pushes the configuration to the bridge over loopback TCP via `chat/configure`
+each time it connects. Keys are never written to the project directory and
+never passed on the command line.
 
-# Windows (PowerShell)
-$env:ANTHROPIC_API_KEY="sk-ant-..."
-
-# Or create .env file in addons/claudot/bridge/
-echo "ANTHROPIC_API_KEY=sk-ant-..." > .env
-```
-
-Get your API key from: https://console.anthropic.com/
+Get an Anthropic key from https://console.anthropic.com/ — required for the
+`anthropic` backend, optional for `claude-code` (and will be required for
+Claude Fable 5 once it moves to API-key-only access).
 
 ## Usage
 
@@ -69,7 +81,7 @@ python addons/claudot/bridge/agent_bridge.py --port 7777 --log-level DEBUG
 Options:
 - `--host` - TCP server host (default: 127.0.0.1)
 - `--port` - TCP server port (default: 7777)
-- `--model` - Claude model (default: claude-opus-4-6)
+- `--model` - Default Claude model (default: claude-opus-4-8; overridden at runtime by `chat/configure`)
 - `--log-level` - Logging level (DEBUG, INFO, WARNING, ERROR)
 
 **Legacy MCP Bridge (tools only, no chat):**
@@ -135,16 +147,50 @@ if needed.
 
 ```
 addons/claudot/bridge/
-├── agent_bridge.py       # Agent SDK implementation
-├── main.py              # Legacy bridge (MCP + subprocess modes)
-├── mcp_server.py        # MCP server with tool definitions
-├── tcp_server.py        # TCP server for Godot connections
-├── claude_subprocess.py # Claude CLI subprocess management
-├── requirements.txt     # Python dependencies
-└── README.md           # This file
+├── agent_bridge.py          # Chat bridge: TCP server, backend dispatch, Agent SDK path
+├── providers.py             # Direct-API providers (Anthropic Messages API, OpenAI-compatible)
+├── godot_tools.py           # Godot tool schemas + executor for direct providers
+├── godot_mcp_server.py      # Standalone MCP server for Claude Code CLI
+├── godot_docs.py            # Godot class-reference search/cache
+├── test_providers_smoke.py  # Provider smoke tests (uv run test_providers_smoke.py)
+├── test_bridge_smoke.py     # Bridge TCP integration test (uv run test_bridge_smoke.py)
+├── main.py                  # Legacy bridge (MCP + subprocess modes)
+├── mcp_server.py            # Legacy MCP server with tool definitions
+├── tcp_server.py            # Legacy TCP server helper
+├── claude_subprocess.py     # Legacy Claude CLI subprocess management
+├── requirements.txt         # Python dependencies
+└── README.md                # This file
 ```
 
 ### Protocol
+
+**Configuration (Godot → Bridge, sent on connect and on settings change):**
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "chat/configure",
+  "params": {
+    "provider": "anthropic",
+    "model": "claude-fable-5",
+    "api_key": "sk-ant-...",
+    "base_url": ""
+  }
+}
+```
+
+The bridge acknowledges with `chat/configured` `{provider, model}`. Changing
+provider, model, key, or base URL tears down the active session; the next
+message starts a fresh one. API keys are redacted from bridge logs and the
+Godot console tab.
+
+**Other bridge → Godot messages:**
+
+- `chat/refusal` `{category, message}` — the model's safety classifiers
+  declined the request (Claude Fable 5). The final `chat/response` still
+  follows to reset the UI state.
+- `chat/error` `{error}` — provider/backend failure (bad key, unreachable
+  endpoint, rate limit). Clears the working indicator.
 
 **Godot → Bridge (TCP, newline-delimited JSON-RPC):**
 

@@ -131,7 +131,7 @@ func _ensure_deps(launcher: String) -> bool:
 	var output: Array = []
 	var exit_code = OS.execute(
 		launcher,
-		PackedStringArray(["-c", "import claude_agent_sdk; import anyio"]),
+		PackedStringArray(["-c", "import claude_agent_sdk; import anyio; import httpx"]),
 		output,
 		true
 	)
@@ -143,12 +143,12 @@ func _ensure_deps(launcher: String) -> bool:
 	var pip_output: Array = []
 	var pip_exit = OS.execute(
 		launcher,
-		PackedStringArray(["-m", "pip", "install", "claude-agent-sdk>=0.1.0", "anyio>=4.0.0"]),
+		PackedStringArray(["-m", "pip", "install", "claude-agent-sdk>=0.1.0", "anyio>=4.0.0", "httpx>=0.27.0"]),
 		pip_output,
 		true
 	)
 	if pip_exit != 0:
-		var msg = "[b]Failed to install Python dependencies.[/b]\n\nTry running manually:\n  %s -m pip install claude-agent-sdk anyio\n\nOr install uv (recommended) which handles dependencies automatically." % launcher
+		var msg = "[b]Failed to install Python dependencies.[/b]\n\nTry running manually:\n  %s -m pip install claude-agent-sdk anyio httpx\n\nOr install uv (recommended) which handles dependencies automatically." % launcher
 		push_error("[Claudot BridgeLauncher] " + msg)
 		launcher_error.emit(msg)
 		return false
