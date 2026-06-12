@@ -1,6 +1,8 @@
 # Claudot
 
-**Claude Code integration for the Godot editor.** Inspect scenes, modify nodes, run your game, capture screenshots, and chat with AI -- all without leaving the editor.
+**AI integration for the Godot editor.** Inspect scenes, modify nodes, run your game, capture screenshots, and chat with AI -- all without leaving the editor.
+
+Built around Claude Code, with bring-your-own-API-key support for the Anthropic API (including **Claude Fable 5**), OpenAI, and any OpenAI-compatible endpoint (Ollama, OpenRouter, ...).
 
 ![Claudot in the Godot editor](claudot_ui_examples/editor_screenshot.png)
 
@@ -11,7 +13,7 @@
 | Dependency | Install |
 |---|---|
 | **Godot 4.2+** | [godotengine.org](https://godotengine.org/download) |
-| **Claude Code** | [claude.ai/code](https://claude.ai/code) -- run `claude` once to complete OAuth login |
+| **Claude Code** | [claude.ai/code](https://claude.ai/code) -- run `claude` once to complete OAuth login. *Optional if you use a bring-your-own-API-key provider instead (see Settings below).* |
 | **Python 3.10+** or **uv** | [python.org](https://www.python.org/downloads/) or [docs.astral.sh/uv](https://docs.astral.sh/uv/getting-started/installation/) |
 | **Git** (Windows only) | [git-scm.com](https://git-scm.com/download/win) |
 
@@ -78,9 +80,26 @@ The info bar has checkboxes that control what context is automatically included 
 
 ![Docs checkbox forces API doc lookups](claudot_ui_examples/docs_checked.JPG)
 
+### Providers, Models & API Keys
+
+Click **Settings** in the info bar to choose how the chat panel talks to an AI model:
+
+| Provider | Auth | Capabilities |
+|---|---|---|
+| **Claude Code** (default) | Your Claude subscription login (`claude` CLI). An Anthropic API key may optionally be supplied and takes precedence. | Everything: file edits, bash, all 20 Godot MCP tools |
+| **Anthropic API** | API key from [console.anthropic.com](https://console.anthropic.com) | Chat + 16 Godot scene/docs tools (no file editing) |
+| **OpenAI API** | API key from [platform.openai.com](https://platform.openai.com) | Chat + 16 Godot scene/docs tools (no file editing) |
+| **Custom OpenAI-compatible** | Base URL + optional key — works with Ollama (`http://localhost:11434/v1`), OpenRouter (`https://openrouter.ai/api/v1`), etc. | Chat + 16 Godot scene/docs tools (no file editing) |
+
+Available Claude models include **Claude Fable 5** (Anthropic's most capable model), **Claude Opus 4.8** (recommended default), Opus 4.7/4.6, Sonnet 4.6, and Haiku 4.5. A quick model switcher lives directly in the info bar; the Settings dialog also accepts any custom model ID.
+
+**API keys are stored in your Godot editor settings** — outside the project directory, so they can never be committed to version control.
+
+**Claude Fable 5 notes:** Fable runs safety classifiers that may decline security- or biology-adjacent requests. When that happens Claudot shows the refusal and suggests switching to Claude Opus 4.8. Fable also requires the API to retain data for 30 days (not available for zero-data-retention orgs).
+
 ### Clearing the Chat
 
-Click **Clear** in the top-right to reset the conversation.
+Click **Clear** in the top-right to reset the conversation. This also resets the model's conversation memory, not just the visible transcript.
 
 ![Click Clear to reset the conversation](claudot_ui_examples/clear_button.JPG)
 

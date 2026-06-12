@@ -4,21 +4,29 @@
 # dependencies = [
 #   "claude-agent-sdk>=0.1.0",
 #   "anyio>=4.0.0",
+#   "httpx>=0.27.0",
 # ]
 # ///
 
 """
 Claudot Agent Bridge - Chat relay daemon for Godot plugin.
 
-Provides persistent Claude conversation sessions for the Godot chat interface.
-Uses Claude Agent SDK for chat relay and real-time streaming.
+Provides persistent AI conversation sessions for the Godot chat interface.
+
+Three chat backends, selected at runtime via the chat/configure message:
+- "claude-code" (default): Claude Agent SDK → Claude Code CLI. Uses the CLI's
+  OAuth login, or an Anthropic API key if one is provided. Full Claude Code
+  capabilities (file edits, bash, MCP tools).
+- "anthropic": Anthropic Messages API directly with a user-supplied API key.
+  Godot scene tools work via the editor HTTP bridge; no file/bash tools.
+- "openai" / "custom": any OpenAI-compatible /chat/completions endpoint with
+  a user-supplied key (OpenAI, OpenRouter, Ollama, ...). Same tool surface
+  as "anthropic".
 
 Architecture:
-- TCP server on port 7777 for Godot plugin connections
-- Claude API client for chat messages (Agent SDK)
-- MCP tools are provided by the standalone godot_mcp_server.py (not this file)
-
-This is the chat-only bridge. For MCP tools, see addons/claudot/bridge/godot_mcp_server.py.
+- TCP server (default port 7777, per-project port in practice) for Godot
+- Claude Agent SDK or direct-API providers (providers.py) for chat
+- MCP tools for Claude Code are provided by godot_mcp_server.py (not here)
 """
 
 import asyncio
@@ -27,6 +35,7 @@ import logging
 import os
 import sys
 import time
+from contextlib import AsyncExitStack
 from pathlib import Path
 from typing import Optional
 
@@ -43,44 +52,22 @@ from claude_agent_sdk import (
     ToolUseBlock
 )
 
+import providers
+from providers import (
+    AnthropicAPIProvider,
+    OpenAICompatProvider,
+    ProviderError,
+    context_window_for_model,
+)
+
 logger = logging.getLogger(__name__)
 
-# Context window sizes by model family (prefix match)
-# Claude Code CLI uses 1M context for Opus/Sonnet 4.x by default
-_MODEL_CONTEXT_WINDOWS = {
-    "claude-opus-4":   1_000_000,
-    "claude-sonnet-4": 1_000_000,
-    "claude-haiku-4":    200_000,
-    "claude-3-5":        200_000,
-    "claude-3-opus":     200_000,
-}
-_DEFAULT_CONTEXT_WINDOW = 200_000
-
-
-def _context_window_for_model(model_id: str) -> int:
-    """Return context window token count for a model ID via prefix match."""
-    for prefix, tokens in _MODEL_CONTEXT_WINDOWS.items():
-        if model_id.startswith(prefix):
-            return tokens
-    return _DEFAULT_CONTEXT_WINDOW
+DEFAULT_MODEL = "claude-opus-4-8"
 
 _BUILTIN_COMMANDS = {"/clear", "/compact", "/cost", "/help", "/memory",
                      "/model", "/permissions", "/plan", "/review", "/status", "/vim"}
 
-_SYSTEM_PROMPT = """You are an expert Godot 4 GDScript developer embedded in the Godot editor as an AI assistant.
-
-## MCP Tool Use — Mandatory
-
-Always call MCP tools proactively. Never wait for the user to ask.
-
-- Before ANY scene work: call get_editor_context()
-- Before reading/editing a node's script: call get_node_script(node_path)
-- Before set_node_property or scene mutations: call get_scene_state() or get_node_property()
-- To find .gd files: call search_files(extensions=[".gd"]) — never guess paths
-- After writing or changing code: call run_tests(), then get_debugger_output() and get_debugger_errors()
-- After visual scene changes: call capture_screenshot()
-
-## GDScript 4.x — Required Patterns
+_GDSCRIPT_GUIDE = """## GDScript 4.x — Required Patterns
 
 Write Godot 4 GDScript only. Never use Godot 3 syntax.
 
@@ -138,6 +125,56 @@ var scores: Dictionary = {}
 - `connect("signal", obj, "method")` → `signal_name.connect(callable)`
 """
 
+_SYSTEM_PROMPT = """You are an expert Godot 4 GDScript developer embedded in the Godot editor as an AI assistant.
+
+## MCP Tool Use — Mandatory
+
+Always call MCP tools proactively. Never wait for the user to ask.
+
+- Before ANY scene work: call get_editor_context()
+- Before reading/editing a node's script: call get_node_script(node_path)
+- Before set_node_property or scene mutations: call get_scene_state() or get_node_property()
+- To find .gd files: call search_files(extensions=[".gd"]) — never guess paths
+- After writing or changing code: call run_tests(), then get_debugger_output() and get_debugger_errors()
+- After visual scene changes: call capture_screenshot()
+
+""" + _GDSCRIPT_GUIDE
+
+_DIRECT_SYSTEM_PROMPT = """You are an expert Godot 4 GDScript developer embedded in the Godot editor as an AI assistant.
+
+## Godot Tools — Use Proactively
+
+You have tools that inspect and modify the live Godot editor. Call them proactively; never wait for the user to ask.
+
+- Before ANY scene work: call get_editor_context()
+- Before reading a node's script: call get_node_script(node_path)
+- Before set_node_property or scene mutations: call get_scene_state() or get_node_property()
+- To find files: call search_files(extensions=[".gd"]) — never guess paths
+- Before writing GDScript involving a built-in class you are not 100% sure about: call godot_search_docs() or godot_get_class_docs()
+- After running the game: check get_debugger_output() and get_debugger_errors()
+
+Scene modifications (set_node_property, create_node, delete_node, reparent_node) are undoable with Ctrl+Z.
+
+## Limits
+
+You can NOT edit files on disk in this mode. To change a script, show the user the complete updated GDScript in a code block and tell them which file to paste it into. You CAN read scripts (get_node_script), modify scene nodes and properties, run the game, run tests, and read debugger output.
+
+""" + _GDSCRIPT_GUIDE
+
+
+def _redact_config(message: dict) -> dict:
+    """Return a copy of a JSON-RPC message safe for logging (API key masked)."""
+    try:
+        params = message.get("params")
+        if isinstance(params, dict) and params.get("api_key"):
+            redacted = dict(message)
+            redacted["params"] = dict(params)
+            redacted["params"]["api_key"] = "***redacted***"
+            return redacted
+    except Exception:
+        pass
+    return message
+
 
 class GodotTCPConnection:
     """Manages TCP connection to a single Godot editor instance."""
@@ -161,7 +198,7 @@ class GodotTCPConnection:
                 return None
 
             message = json.loads(line.decode('utf-8'))
-            logger.debug(f"Received from Godot: {message}")
+            logger.debug(f"Received from Godot: {_redact_config(message)}")
             return message
 
         except asyncio.CancelledError:
@@ -198,27 +235,26 @@ class GodotTCPConnection:
 
 class AgentBridge:
     """
-    Chat relay bridge daemon using Claude Agent SDK for persistent conversations.
+    Chat relay bridge daemon with selectable backends.
 
     Architecture:
-    - Godot connects via TCP on port 7777 (one connection = one Claude session)
-    - Bridge maintains persistent ClaudeSDKClient for conversation continuity
+    - Godot connects via TCP (one connection = one chat session)
+    - Backend is chosen via chat/configure: Claude Agent SDK (default) or a
+      direct-API provider from providers.py
     - Responses stream back to Godot in real-time
-    - MCP tools are handled separately by godot_mcp_server.py via HTTP bridge
-
-    This is chat-only. Scene manipulation uses the standalone MCP server.
+    - MCP tools for the Claude Code path are handled by godot_mcp_server.py;
+      direct providers call the Godot HTTP bridge themselves (godot_tools.py)
     """
 
     def __init__(
         self,
         host: str = "127.0.0.1",
         port: int = 7777,
-        model: str = "claude-opus-4-6",
+        model: str = DEFAULT_MODEL,
         log_level: str = "INFO"
     ):
         self.host = host
         self.port = port
-        self.model = model
         self.log_level = log_level
 
         self.tcp_connection: Optional[GodotTCPConnection] = None
@@ -226,8 +262,22 @@ class AgentBridge:
         self._query_queue: asyncio.Queue = asyncio.Queue()
         self._permission_queue: asyncio.Queue = asyncio.Queue()
         self._session_allowed_tools: set[str] = set()
-        self._context_window_tokens: int = _context_window_for_model(model)
         self._detected_model: Optional[str] = None
+
+        # Runtime configuration (overridden by chat/configure from Godot)
+        self._config: dict = {
+            "provider": "claude-code",
+            "model": model,
+            "api_key": "",
+            "base_url": "",
+        }
+        self._context_window_tokens: int = context_window_for_model(model)
+
+        # Active sessions (created lazily, torn down on reconfigure / disconnect)
+        self._client: Optional[ClaudeSDKClient] = None
+        self._sdk_stack: Optional[AsyncExitStack] = None
+        self._direct_provider = None
+        self._env_key_injected: bool = False
 
         # Setup logging
         self._setup_logging()
@@ -249,7 +299,7 @@ class AgentBridge:
 
     async def handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         """
-        Handle a single Godot editor connection with persistent Claude session.
+        Handle a single Godot editor connection with persistent chat session.
 
         Args:
             reader: TCP stream reader
@@ -264,6 +314,7 @@ class AgentBridge:
         except Exception as e:
             logger.error(f"Conversation error: {e}", exc_info=True)
         finally:
+            await self._teardown_sessions()
             self.tcp_connection.close()
             self.tcp_connection = None
             logger.info(f"Godot editor disconnected from {client_addr}")
@@ -338,6 +389,9 @@ class AgentBridge:
     async def _handle_builtin_command(self, command: str) -> None:
         """Handle a built-in slash command locally without forwarding to the SDK."""
         if command == "/clear":
+            # Reset backend conversation state so the model forgets too,
+            # not just the UI transcript.
+            await self._teardown_sessions(keep_env=True)
             await self.tcp_connection.send_message({
                 "jsonrpc": "2.0",
                 "method": "chat/clear",
@@ -364,17 +418,19 @@ class AgentBridge:
     async def _tcp_router(self):
         """Read ALL incoming TCP messages and route by method.
 
-        Runs concurrently with _claude_processor so that TCP messages are always
-        being read — even while Claude is processing a query. This prevents the
-        deadlock where _answer_queue.get() would block forever because nobody was
-        reading the TCP stream.
+        Runs concurrently with _processor so that TCP messages are always
+        being read — even while the model is processing a query. This prevents
+        the deadlock where _answer_queue.get() would block forever because
+        nobody was reading the TCP stream.
         """
         while True:
             msg = await self.tcp_connection.receive_message()
             if not msg:
                 break
             method = msg.get("method", "")
-            if method == "chat/send":
+            if method in ("chat/send", "chat/configure"):
+                # Sequenced through the query queue so reconfiguration never
+                # tears down a session mid-turn.
                 await self._query_queue.put(msg)
             elif method == "chat/ask_user_answer":
                 answer = msg.get("params", {}).get("answer", "")
@@ -383,59 +439,70 @@ class AgentBridge:
                 decision = msg.get("params", {}).get("decision", "deny")
                 await self._permission_queue.put(decision)
             elif method == "chat/cancel":
+                logger.info("Interrupt requested by user")
                 if self._client:
-                    logger.info("Interrupt requested by user")
                     await self._client.interrupt()
+                if self._direct_provider:
+                    self._direct_provider.interrupt()
             else:
                 logger.warning(f"Unknown method from Godot: {method}")
 
-    async def _claude_processor(self, client: ClaudeSDKClient):
-        """Process chat/send messages through Claude sequentially.
+    # ------------------------------------------------------------------
+    # Configuration & session lifecycle
+    # ------------------------------------------------------------------
 
-        Runs concurrently with _tcp_router. Picks up messages from _query_queue
-        (fed by _tcp_router) and processes them one at a time through Claude.
-        """
-        while True:
-            msg = await self._query_queue.get()
-            try:
-                params = msg.get("params", {})
-                content = params.get("content", "")
-                context = params.get("context", {})
+    async def _apply_config(self, params: dict) -> None:
+        """Apply a chat/configure message: provider/model/key/base_url."""
+        new_config = {
+            "provider": params.get("provider", self._config["provider"]) or "claude-code",
+            "model": params.get("model", self._config["model"]) or DEFAULT_MODEL,
+            "api_key": params.get("api_key", ""),
+            "base_url": params.get("base_url", ""),
+        }
+        if new_config == self._config and (self._client or self._direct_provider):
+            # No change and a session is already live — nothing to do.
+            return
 
-                prompt = self._build_prompt_with_context(content, context)
-                logger.info(f"User message: {content[:100]}...")
-
-                if content.strip() in _BUILTIN_COMMANDS:
-                    await self._handle_builtin_command(content.strip())
-                    continue
-
-                await client.query(prompt)
-                await self._stream_response_to_godot(client)
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                logger.error(f"Message handling error: {e}", exc_info=True)
-                await self.tcp_connection.send_message({
-                    "jsonrpc": "2.0",
-                    "method": "chat/error",
-                    "params": {"error": str(e)}
-                })
-
-    async def _run_conversation_loop(self):
-        """Main conversation loop with persistent Claude session."""
-
-        # Reset queues and session state for this connection
-        self._answer_queue = asyncio.Queue()
-        self._query_queue = asyncio.Queue()
-        self._permission_queue = asyncio.Queue()
-        self._session_allowed_tools = set()
-        self._client = None
+        changed_session = (
+            new_config["provider"] != self._config["provider"]
+            or new_config["model"] != self._config["model"]
+            or new_config["api_key"] != self._config["api_key"]
+            or new_config["base_url"] != self._config["base_url"]
+        )
+        self._config = new_config
+        self._context_window_tokens = context_window_for_model(new_config["model"])
         self._detected_model = None
-        self._plan_mode = False
 
-        # Configure Claude Agent SDK options with PreToolUse hook for AskUserQuestion
-        options = ClaudeAgentOptions(
-            model=self.model,
+        if changed_session:
+            await self._teardown_sessions()
+
+        logger.info(
+            f"Configured: provider={new_config['provider']} model={new_config['model']} "
+            f"key={'set' if new_config['api_key'] else 'none'} base_url={new_config['base_url'] or '-'}"
+        )
+        await self.tcp_connection.send_message({
+            "jsonrpc": "2.0",
+            "method": "chat/configured",
+            "params": {"provider": new_config["provider"], "model": new_config["model"]}
+        })
+
+    async def _teardown_sessions(self, keep_env: bool = False) -> None:
+        """Close any active backend session. Next message recreates it lazily."""
+        if self._sdk_stack:
+            try:
+                await self._sdk_stack.aclose()
+            except Exception as e:
+                logger.warning(f"Error closing Claude SDK session: {e}")
+            self._sdk_stack = None
+            self._client = None
+        self._direct_provider = None
+        if not keep_env and self._env_key_injected:
+            os.environ.pop("ANTHROPIC_API_KEY", None)
+            self._env_key_injected = False
+
+    def _build_agent_options(self) -> ClaudeAgentOptions:
+        return ClaudeAgentOptions(
+            model=self._config["model"],
             system_prompt=_SYSTEM_PROMPT,
             allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep", "WebFetch", "WebSearch"],
             permission_mode="acceptEdits",  # Auto-approve file edits
@@ -450,32 +517,155 @@ class AgentBridge:
             }
         )
 
+    async def _ensure_sdk_client(self) -> ClaudeSDKClient:
+        """Create the Claude Agent SDK session if it isn't running yet."""
+        if self._client:
+            return self._client
+
+        # If the user supplied an Anthropic API key for the Claude Code path,
+        # expose it to the CLI subprocess via the environment. Without a key,
+        # the CLI falls back to its own OAuth login (~/.claude).
+        if self._config["api_key"]:
+            os.environ["ANTHROPIC_API_KEY"] = self._config["api_key"]
+            self._env_key_injected = True
+
         logger.info("Creating persistent Claude session...")
+        self._sdk_stack = AsyncExitStack()
+        self._client = await self._sdk_stack.enter_async_context(
+            ClaudeSDKClient(options=self._build_agent_options())
+        )
+        logger.info("Claude session established")
 
-        async with ClaudeSDKClient(options=options) as client:
-            self._client = client
-            logger.info("Claude session established")
+        # Log server info for diagnostics (model/context info discovery)
+        try:
+            server_info = await self._client.get_server_info()
+            if server_info:
+                logger.info(f"Server info keys: {list(server_info.keys())}")
+        except Exception:
+            pass
 
-            # Log server info for diagnostics (model/context info discovery)
+        return self._client
+
+    def _ensure_direct_provider(self):
+        """Create the direct-API provider if it isn't running yet."""
+        if self._direct_provider:
+            return self._direct_provider
+
+        provider = self._config["provider"]
+        if provider == "anthropic":
+            if not self._config["api_key"]:
+                raise ProviderError(
+                    "Anthropic API provider selected but no API key configured. "
+                    "Open Claudot Settings and enter your key (console.anthropic.com)."
+                )
+            self._direct_provider = AnthropicAPIProvider(
+                api_key=self._config["api_key"],
+                model=self._config["model"],
+                system_prompt=_DIRECT_SYSTEM_PROMPT,
+                base_url=self._config["base_url"],
+            )
+        elif provider in ("openai", "custom"):
+            if provider == "custom" and not self._config["base_url"]:
+                raise ProviderError(
+                    "Custom provider selected but no base URL configured. "
+                    "Open Claudot Settings and enter the endpoint base URL "
+                    "(e.g. http://localhost:11434/v1 for Ollama)."
+                )
+            if provider == "openai" and not self._config["api_key"]:
+                raise ProviderError(
+                    "OpenAI provider selected but no API key configured. "
+                    "Open Claudot Settings and enter your key (platform.openai.com)."
+                )
+            self._direct_provider = OpenAICompatProvider(
+                api_key=self._config["api_key"],
+                model=self._config["model"],
+                system_prompt=_DIRECT_SYSTEM_PROMPT,
+                base_url=self._config["base_url"],
+            )
+        else:
+            raise ProviderError(f"Unknown provider '{provider}'.")
+
+        logger.info(f"Direct provider ready: {provider} / {self._config['model']}")
+        return self._direct_provider
+
+    # ------------------------------------------------------------------
+    # Message processing
+    # ------------------------------------------------------------------
+
+    async def _processor(self):
+        """Process chat/send and chat/configure messages sequentially.
+
+        Runs concurrently with _tcp_router. Picks up messages from _query_queue
+        (fed by _tcp_router) and processes them one at a time.
+        """
+        while True:
+            msg = await self._query_queue.get()
             try:
-                server_info = await client.get_server_info()
-                if server_info:
-                    logger.info(f"Server info keys: {list(server_info.keys())}")
-            except Exception:
-                pass
+                params = msg.get("params", {})
 
-            # Send initial system message
-            await self.tcp_connection.send_message({
-                "jsonrpc": "2.0",
-                "method": "chat/system",
-                "params": {"message": f"Claude AI assistant ready. Working in: {os.getcwd()}"}
-            })
+                if msg.get("method") == "chat/configure":
+                    await self._apply_config(params)
+                    continue
 
-            # Run TCP router and Claude processor concurrently.
-            # The task group exits when either task finishes (TCP disconnect or error).
-            async with anyio.create_task_group() as tg:
-                tg.start_soon(self._tcp_router)
-                tg.start_soon(self._claude_processor, client)
+                content = params.get("content", "")
+                context = params.get("context", {})
+
+                prompt = self._build_prompt_with_context(content, context)
+                logger.info(f"User message: {content[:100]}...")
+
+                if content.strip() in _BUILTIN_COMMANDS:
+                    await self._handle_builtin_command(content.strip())
+                    continue
+
+                if self._config["provider"] == "claude-code":
+                    client = await self._ensure_sdk_client()
+                    await client.query(prompt)
+                    await self._stream_response_to_godot(client)
+                else:
+                    provider = self._ensure_direct_provider()
+                    await self._stream_direct_turn(provider, prompt)
+
+            except asyncio.CancelledError:
+                break
+            except ProviderError as e:
+                logger.error(f"Provider error: {e}")
+                await self.tcp_connection.send_message({
+                    "jsonrpc": "2.0",
+                    "method": "chat/error",
+                    "params": {"error": str(e)}
+                })
+            except Exception as e:
+                logger.error(f"Message handling error: {e}", exc_info=True)
+                await self.tcp_connection.send_message({
+                    "jsonrpc": "2.0",
+                    "method": "chat/error",
+                    "params": {"error": str(e)}
+                })
+
+    async def _run_conversation_loop(self):
+        """Main conversation loop with persistent chat session."""
+
+        # Reset queues and session state for this connection
+        self._answer_queue = asyncio.Queue()
+        self._query_queue = asyncio.Queue()
+        self._permission_queue = asyncio.Queue()
+        self._session_allowed_tools = set()
+        self._detected_model = None
+        self._plan_mode = False
+
+        # Send initial system message. Backend sessions are created lazily on
+        # the first chat message, after Godot has sent chat/configure.
+        await self.tcp_connection.send_message({
+            "jsonrpc": "2.0",
+            "method": "chat/system",
+            "params": {"message": f"Claudot bridge ready. Working in: {os.getcwd()}"}
+        })
+
+        # Run TCP router and processor concurrently.
+        # The task group exits when either task finishes (TCP disconnect or error).
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(self._tcp_router)
+            tg.start_soon(self._processor)
 
     def _build_prompt_with_context(self, content: str, context: dict) -> str:
         """
@@ -530,9 +720,80 @@ class AgentBridge:
 
         return prompt
 
+    async def _stream_direct_turn(self, provider, prompt: str):
+        """
+        Run one turn through a direct-API provider and forward events to Godot.
+
+        Args:
+            provider: AnthropicAPIProvider or OpenAICompatProvider
+            prompt: Fully-built prompt (context already injected)
+        """
+        await self.tcp_connection.send_message({
+            "jsonrpc": "2.0",
+            "method": "chat/stream_start",
+            "params": {"timestamp": time.time()}
+        })
+
+        sent_any_text = False
+        async for event in provider.run_turn(prompt):
+            etype = event.get("type")
+
+            if etype == "text":
+                sent_any_text = True
+                await self.tcp_connection.send_message({
+                    "jsonrpc": "2.0",
+                    "method": "chat/assistant_text",
+                    "params": {"content": event["text"], "is_partial": True}
+                })
+
+            elif etype == "tool_use":
+                await self.tcp_connection.send_message({
+                    "jsonrpc": "2.0",
+                    "method": "chat/tool_use",
+                    "params": {"tool_name": event["name"], "tool_input": event["input"]}
+                })
+
+            elif etype == "refusal":
+                category = event.get("category")
+                cat_str = f" (category: {category})" if category else ""
+                await self.tcp_connection.send_message({
+                    "jsonrpc": "2.0",
+                    "method": "chat/refusal",
+                    "params": {
+                        "category": category,
+                        "message": (
+                            f"The model's safety classifiers declined this request{cat_str}. "
+                            "Try rephrasing, or switch to Claude Opus 4.8 in Claudot Settings — "
+                            "it handles security- and biology-adjacent topics that Claude Fable 5 declines."
+                        )
+                    }
+                })
+
+            elif etype == "result":
+                usage = event.get("usage", {})
+                await self.tcp_connection.send_message({
+                    "jsonrpc": "2.0",
+                    "method": "chat/response",
+                    "params": {
+                        # Text was already streamed via chat/assistant_text; sending
+                        # content again would duplicate it in the UI when no
+                        # intermediate text was shown — send it only as fallback.
+                        "content": "" if sent_any_text else event.get("content", ""),
+                        "cost_usd": event.get("cost_usd", 0.0),
+                        "duration_ms": event.get("duration_ms", 0),
+                        "num_turns": event.get("num_turns", 1),
+                        "usage": usage
+                    }
+                })
+                pct = usage.get("context_pct", 0.0)
+                logger.info(
+                    f"Direct turn complete ({event.get('num_turns', 1)} requests, "
+                    f"${event.get('cost_usd', 0.0):.4f}, {event.get('duration_ms', 0)}ms, {pct}% ctx)"
+                )
+
     async def _stream_response_to_godot(self, client: ClaudeSDKClient):
         """
-        Stream Claude's response back to Godot in real-time.
+        Stream Claude's response back to Godot in real-time (Agent SDK path).
 
         Args:
             client: Claude SDK client
@@ -551,7 +812,7 @@ class AgentBridge:
                 # Detect context window from first response's model name
                 if not self._detected_model and message.model:
                     self._detected_model = message.model
-                    self._context_window_tokens = _context_window_for_model(message.model)
+                    self._context_window_tokens = context_window_for_model(message.model)
                     logger.info(f"Detected model: {message.model} → context window: {self._context_window_tokens:,} tokens")
                 # Complete message available
                 for block in message.content:
@@ -622,7 +883,7 @@ class AgentBridge:
 
         addr = server.sockets[0].getsockname()
         logger.info(f"Agent Bridge listening on {addr[0]}:{addr[1]}")
-        logger.info(f"Model: {self.model}")
+        logger.info(f"Default model: {self._config['model']}")
         logger.info(f"Ready for Godot connections...")
 
         async with server:
@@ -636,7 +897,7 @@ async def main():
     parser = argparse.ArgumentParser(description="Claudot Agent Bridge Daemon")
     parser.add_argument("--host", default="127.0.0.1", help="TCP server host")
     parser.add_argument("--port", type=int, default=7777, help="TCP server port")
-    parser.add_argument("--model", default="claude-opus-4-6", help="Claude model to use")
+    parser.add_argument("--model", default=DEFAULT_MODEL, help="Default Claude model (overridden by chat/configure)")
     parser.add_argument("--log-level", default="INFO", help="Logging level")
     parser.add_argument("--project-root", default="", help="Godot project root directory")
 

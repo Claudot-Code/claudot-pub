@@ -12,8 +12,9 @@ const ConsoleTabScript = preload("res://addons/claudot/ui/console_tab.gd")
 const ConversationStorage = preload("res://addons/claudot/ui/conversation_storage.gd")
 const TCPClient = preload("res://addons/claudot/network/tcp_client.gd")
 const ContextProvider = preload("res://addons/claudot/mcp/context_provider.gd")
+const SettingsDialogScript = preload("res://addons/claudot/ui/settings_dialog.gd")
 
-const CLAUDOT_VERSION = "v2.3-beta"
+const CLAUDOT_VERSION = "v3.0-beta"
 const CLAUDOT_RELEASES_URL = "https://github.com/claudot-dev/claudot/releases"
 
 # Reference to TCP client (set by plugin before entering tree)
@@ -35,6 +36,13 @@ var _intermediate_text_shown: bool = false
 var _ask_user_via_hook: bool = false  # True when chat/ask_user_question arrived (hook path)
 var _last_ctx_pct: float = 0.0  # Last known context window usage percentage
 var clear_tab_button: Button  # Anchor-overlaid in tab bar
+
+# Provider / model configuration UI
+var model_option: OptionButton
+var settings_button: Button
+var settings_dialog: AcceptDialog
+var _model_option_ids: Array = []  # model_option index → model ID
+var _syncing_model_option: bool = false
 
 
 func _ready() -> void:
@@ -124,12 +132,42 @@ func _build_ui() -> void:
 	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	info_bar.add_child(spacer)
 
+	model_option = OptionButton.new()
+	model_option.name = "ModelOption"
+	model_option.flat = true
+	model_option.fit_to_longest_item = false
+	model_option.clip_text = true
+	model_option.custom_minimum_size.x = 130
+	model_option.add_theme_font_size_override("font_size", 11)
+	model_option.tooltip_text = "Active model — full configuration in Settings"
+	model_option.item_selected.connect(_on_model_option_selected)
+	info_bar.add_child(model_option)
+
+	settings_button = Button.new()
+	settings_button.name = "SettingsButton"
+	settings_button.text = "Settings"
+	settings_button.flat = true
+	settings_button.add_theme_font_size_override("font_size", 11)
+	settings_button.tooltip_text = "Provider, model, and API key configuration"
+	settings_button.pressed.connect(_on_settings_pressed)
+	info_bar.add_child(settings_button)
+
+	var vsep_settings = VSeparator.new()
+	info_bar.add_child(vsep_settings)
+
 	connect_button = Button.new()
 	connect_button.name = "ConnectButton"
 	connect_button.text = "Connect"
 	connect_button.flat = true
 	connect_button.add_theme_font_size_override("font_size", 11)
 	info_bar.add_child(connect_button)
+
+	# Settings dialog (hidden until opened)
+	settings_dialog = SettingsDialogScript.new()
+	add_child(settings_dialog)
+	settings_dialog.settings_changed.connect(_on_settings_changed)
+
+	_sync_model_selector()
 
 	# TabContainer (main content area)
 	tab_container = TabContainer.new()
@@ -305,6 +343,8 @@ func _on_connection_state_changed(state: int) -> void:
 			status_label.modulate = Color("#8ec07c")  # Green
 		connect_button.text = "Connected"
 		connect_button.disabled = true
+		# Push provider/model/key configuration to the bridge before any chat
+		_send_configure()
 
 	elif state == TCPClient.ConnectionState.CONNECTING:
 		status_label.text = "Connecting..."
@@ -341,7 +381,7 @@ func _on_message_received(message: Dictionary) -> void:
 	# Forward ALL messages to console tab as raw JSON
 	if console_tab:
 		var msg_type = "response"
-		if message.has("error"):
+		if message.has("error") or message.get("method") == "chat/error":
 			msg_type = "error"
 		console_tab.append_json_message(message, msg_type)
 
@@ -384,6 +424,29 @@ func _on_message_received(message: Dictionary) -> void:
 	# Handle chat/clear from bridge (e.g. user typed /clear)
 	elif message.get("method") == "chat/clear":
 		conversation_tab.clear_conversation()
+
+	# Handle configuration acknowledgment from bridge
+	elif message.get("method") == "chat/configured":
+		if message.has("params") and message.params is Dictionary:
+			var provider = message.params.get("provider", "?")
+			var model = message.params.get("model", "?")
+			status_label.tooltip_text = "Provider: %s\nModel: %s" % [provider, model]
+
+	# Handle safety refusal (e.g. Claude Fable 5 classifiers declined the request)
+	elif message.get("method") == "chat/refusal":
+		if message.has("params") and message.params is Dictionary:
+			var refusal_msg = message.params.get("message", "The model declined this request.")
+			conversation_tab.append_system_message("[b]Request declined.[/b] " + refusal_msg)
+
+	# Handle bridge-reported errors (bad API key, provider failure, ...).
+	# Must clear the working state or the spinner runs forever.
+	elif message.get("method") == "chat/error":
+		is_working = false
+		conversation_tab.set_working(false)
+		var err_text = "unknown error"
+		if message.has("params") and message.params is Dictionary:
+			err_text = str(message.params.get("error", "unknown error"))
+		conversation_tab.append_system_message("[b]Error:[/b] " + err_text)
 
 	# Handle tool permission request from PreToolUse hook
 	elif message.get("method") == "chat/permission_request":
@@ -514,3 +577,82 @@ func _on_connect_pressed() -> void:
 	elif current == TCPClient.ConnectionState.CIRCUIT_OPEN:
 		tcp_client.reset_circuit_breaker()
 		tcp_client.attempt_connect()
+
+
+## Provider / model configuration ------------------------------------------
+
+
+func _short_model_label(model_id: String) -> String:
+	## Compact display name for the info bar dropdown.
+	var label = model_id
+	label = label.trim_prefix("claude-")
+	return label
+
+
+func _sync_model_selector() -> void:
+	## Rebuild the info-bar model dropdown from the saved provider's model list.
+	if model_option == null:
+		return
+	_syncing_model_option = true
+	model_option.clear()
+	_model_option_ids.clear()
+
+	var provider = SettingsDialogScript.get_provider()
+	var current_model = SettingsDialogScript.get_model_for_provider(provider)
+	var models = SettingsDialogScript.get_known_models(provider)
+
+	var selected_idx = -1
+	for m in models:
+		_model_option_ids.append(m["id"])
+		model_option.add_item(_short_model_label(m["id"]))
+		if m["id"] == current_model:
+			selected_idx = _model_option_ids.size() - 1
+
+	# Saved model not in the known list (custom entry) — show it as an extra item
+	if selected_idx < 0 and not current_model.is_empty():
+		_model_option_ids.append(current_model)
+		model_option.add_item(_short_model_label(current_model))
+		selected_idx = _model_option_ids.size() - 1
+
+	if selected_idx >= 0:
+		model_option.select(selected_idx)
+	model_option.tooltip_text = "Model: %s (%s) — full configuration in Settings" % [current_model, provider]
+	_syncing_model_option = false
+
+
+func _on_model_option_selected(index: int) -> void:
+	## Quick model switch from the info bar — persists and reconfigures the bridge.
+	if _syncing_model_option:
+		return
+	if index < 0 or index >= _model_option_ids.size():
+		return
+	var provider = SettingsDialogScript.get_provider()
+	SettingsDialogScript.set_model_for_provider(provider, _model_option_ids[index])
+	_send_configure()
+
+
+func _on_settings_pressed() -> void:
+	settings_dialog.popup_centered()
+
+
+func _on_settings_changed(_config: Dictionary) -> void:
+	## Settings dialog confirmed — refresh the quick selector and reconfigure.
+	_sync_model_selector()
+	_send_configure()
+
+
+func _send_configure() -> void:
+	## Push the current provider/model/key configuration to the bridge.
+	## Safe to call any time; no-op when disconnected (config is re-sent on connect).
+	if tcp_client == null or tcp_client.current_state != TCPClient.ConnectionState.CONNECTED:
+		return
+	var config = SettingsDialogScript.get_config()
+
+	# Console echo with the key masked — never display secrets
+	if console_tab:
+		var redacted = config.duplicate()
+		if not str(redacted.get("api_key", "")).is_empty():
+			redacted["api_key"] = "***"
+		console_tab.append_json_message(redacted, "request")
+
+	tcp_client.send_message("chat/configure", config)
