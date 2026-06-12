@@ -522,7 +522,7 @@ func search_files(params: Dictionary) -> Dictionary:
 
 	# Get EditorFileSystem singleton
 	var editor_interface = plugin.get_editor_interface()
-	var filesystem = editor_interface.get_resource_file_system()
+	var filesystem = editor_interface.get_resource_filesystem()
 
 	if not filesystem:
 		return _error("EditorFileSystem not available - ensure running in Godot editor")
