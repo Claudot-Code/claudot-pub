@@ -612,6 +612,25 @@ async def get_node_script(node_path: str) -> dict:
     return result
 
 
+def _find_project_root() -> Path:
+    """
+    Locate the Godot project root by walking up from this file until a
+    directory containing project.godot is found.
+
+    The bridge lives at <project>/addons/claudot/bridge/, but counting parent
+    directories is fragile (see issue #3) — searching for project.godot works
+    regardless of where the addon is nested.
+    """
+    start = Path(__file__).resolve().parent
+    for candidate in [start, *start.parents]:
+        if (candidate / "project.godot").is_file():
+            return candidate
+    raise ToolError(
+        f"Could not locate the Godot project root: no project.godot found in any "
+        f"parent directory of {start}. Is the Claudot addon installed inside a Godot project?"
+    )
+
+
 # Tool 13: Run tests
 @mcp.tool()
 async def run_tests(test_directory: str = "test/unit", test_file: str = "", test_name: str = "") -> dict:
@@ -621,8 +640,13 @@ async def run_tests(test_directory: str = "test/unit", test_file: str = "", test
     This tool runs Godot in headless mode to execute GDScript tests via the GUT framework.
     It can run all tests or target specific test files/names.
 
+    The Godot executable defaults to `godot` on PATH; set the GODOT_EXECUTABLE
+    environment variable to use a specific binary (e.g. the *_console.exe build
+    on Windows for proper stdout capture).
+
     Args:
-        test_directory: Test directory path (e.g., 'test/unit'). Defaults to 'test/unit'.
+        test_directory: Test directory path (e.g., 'test/unit'). Defaults to 'test/unit';
+            if that doesn't exist but 'tests/unit' does, 'tests/unit' is used.
         test_file: Specific test file to run (e.g., 'test_example.gd'). If omitted, runs all tests in directory.
         test_name: Filter tests by name prefix (e.g., 'test_signal' runs only test_signal_* functions). If omitted, runs all tests in file.
 
@@ -631,11 +655,25 @@ async def run_tests(test_directory: str = "test/unit", test_file: str = "", test
     """
     logger.info(f"run_tests called: directory={test_directory}, file={test_file}, name={test_name}")
 
-    # Locate Godot project root (parent of bridge directory)
-    project_root = Path(__file__).parent.parent.resolve()
+    project_root = _find_project_root()
+
+    # Verify GUT is installed before launching, so a missing addon surfaces as a
+    # clear error instead of a res:// load failure inside headless Godot
+    gut_script = project_root / "addons" / "gut" / "gut_cmdln.gd"
+    if not gut_script.is_file():
+        raise ToolError(
+            f"GUT framework not found: {gut_script} does not exist. "
+            f"Install GUT (https://github.com/bitwes/Gut) in the project's addons/ directory."
+        )
+
+    # Fall back to the plural 'tests/unit' convention when the default is absent
+    if test_directory == "test/unit" and not (project_root / "test" / "unit").is_dir():
+        if (project_root / "tests" / "unit").is_dir():
+            logger.info("Default 'test/unit' not found; using 'tests/unit' instead")
+            test_directory = "tests/unit"
 
     # Verify Godot executable is accessible
-    godot_cmd = "godot"
+    godot_cmd = os.environ.get("GODOT_EXECUTABLE", "godot")
     try:
         result = subprocess.run(
             [godot_cmd, "--version"],
@@ -656,7 +694,7 @@ async def run_tests(test_directory: str = "test/unit", test_file: str = "", test
     logger.info("Running pre-import step...")
     try:
         preimport_result = subprocess.run(
-            [godot_cmd, "--headless", "--import", "--quit"],
+            [godot_cmd, "--headless", "--path", str(project_root), "--import", "--quit"],
             cwd=str(project_root),
             capture_output=True,
             text=True,
@@ -667,10 +705,13 @@ async def run_tests(test_directory: str = "test/unit", test_file: str = "", test
         logger.warning("Pre-import timed out (continuing anyway)")
 
     # Step 2: Build GUT command
+    # --path is required so res:// resolves against the project root even though
+    # the subprocess cwd is also set (issue #3: relying on cwd alone failed)
     gut_args = [
         godot_cmd,
         "--headless",
-        "-s", "addons/gut/gut_cmdln.gd"
+        "--path", str(project_root),
+        "-s", "res://addons/gut/gut_cmdln.gd"
     ]
 
     # Add directory filter
@@ -717,6 +758,16 @@ async def run_tests(test_directory: str = "test/unit", test_file: str = "", test
 
     # Step 4: Parse GUT output
     parsed = _parse_gut_output(stdout)
+
+    # Guard against false positives: if GUT never printed a summary line, the
+    # runner did not actually execute (e.g. gut_cmdln.gd failed to load), so
+    # reporting "0 tests / all passed" would be wrong
+    if not parsed["summary_found"]:
+        raise ToolError(
+            "GUT did not run — no test summary found in output. "
+            f"Godot exit code: {exit_code}.\n\n"
+            f"stdout:\n{stdout}\n\nstderr:\n{stderr}"
+        )
 
     # Build result message
     result_text = "**Test Results**\n\n"
@@ -773,12 +824,14 @@ def _parse_gut_output(output: str) -> dict:
         "passed": 0,
         "failed": 0,
         "pending": 0,
-        "failures": []
+        "failures": [],
+        "summary_found": False
     }
 
     # Extract summary counts from "passed:6 failed:0 pending:0" line
     summary_match = re.search(r'passed:(\d+)\s+failed:(\d+)\s+pending:(\d+)', output)
     if summary_match:
+        result["summary_found"] = True
         result["passed"] = int(summary_match.group(1))
         result["failed"] = int(summary_match.group(2))
         result["pending"] = int(summary_match.group(3))
