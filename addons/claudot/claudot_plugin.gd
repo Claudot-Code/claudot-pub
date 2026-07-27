@@ -173,15 +173,19 @@ func _generate_mcp_json() -> void:
 	var script_abs = ProjectSettings.globalize_path("res://addons/claudot/bridge/godot_mcp_server.py")
 	var project_root = ProjectSettings.globalize_path("res://")
 
-	# Build args based on launcher (uv needs "run" subcommand)
+	# Build args based on launcher (uv needs "run" subcommand).
+	# For a bare Python launcher, resolve to an absolute interpreter path — MCP clients
+	# spawn the command without a shell, where a bare name may not resolve (see below).
 	var args: Array
+	var command: String = launcher
 	if launcher == "uv":
 		args = ["run", script_abs]
 	else:
 		args = [script_abs]
+		command = _resolve_interpreter_path(launcher)
 
 	var our_entry = {
-		"command": launcher,
+		"command": command,
 		"args": args,
 		"env": {"GODOT_BRIDGE_URL": "http://127.0.0.1:7778"}
 	}
@@ -215,6 +219,31 @@ func _generate_mcp_json() -> void:
 		return
 	fw.store_string(JSON.stringify(existing, "  ") + "\n")
 	fw.close()
+
+
+func _resolve_interpreter_path(launcher: String) -> String:
+	## Resolve a bare interpreter name to an absolute executable path.
+	##
+	## MCP clients spawn the configured command directly, without a shell. On Windows
+	## a bare "python" resolves to the Microsoft Store app execution alias under
+	## %LOCALAPPDATA%\Microsoft\WindowsApps, which works from an interactive shell but
+	## is not a real executable — spawning it as a subprocess fails and the MCP
+	## handshake never completes.
+	##
+	## Asking the interpreter for sys.executable returns the actual binary on every
+	## platform. Falls back to the bare name if resolution fails, preserving the
+	## previous behaviour.
+	var output: Array = []
+	var exit_code = OS.execute(launcher, ["-c", "import sys; print(sys.executable)"], output)
+	if exit_code != 0 or output.is_empty():
+		return launcher
+
+	var resolved = String(output[0]).strip_edges()
+	if resolved.is_empty() or not FileAccess.file_exists(resolved):
+		return launcher
+
+	# Forward slashes keep the JSON free of escaped backslashes on Windows
+	return resolved.replace("\\", "/")
 
 
 func _ensure_gitignore_entries() -> void:
@@ -570,4 +599,3 @@ func _exit_tree() -> void:
 			tcp_client.cleanup()
 		tcp_client.queue_free()
 		tcp_client = null
-
