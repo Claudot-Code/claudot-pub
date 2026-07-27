@@ -48,6 +48,9 @@ MAX_TOOL_ITERATIONS = 25
 CLAUDE_MODELS = {
     "claude-fable-5":   {"context": 1_000_000, "in": 10.0, "out": 50.0, "thinking": "omit"},
     "claude-mythos-5":  {"context": 1_000_000, "in": 10.0, "out": 50.0, "thinking": "omit"},
+    "claude-opus-5":    {"context": 1_000_000, "in": 5.0,  "out": 25.0, "thinking": "adaptive"},
+    # Sonnet 5 intro pricing is $2/$10 through 2026-08-31; standard rates listed here
+    "claude-sonnet-5":  {"context": 1_000_000, "in": 3.0,  "out": 15.0, "thinking": "adaptive"},
     "claude-opus-4-8":  {"context": 1_000_000, "in": 5.0,  "out": 25.0, "thinking": "adaptive"},
     "claude-opus-4-7":  {"context": 1_000_000, "in": 5.0,  "out": 25.0, "thinking": "adaptive"},
     "claude-opus-4-6":  {"context": 1_000_000, "in": 5.0,  "out": 25.0, "thinking": "adaptive"},
@@ -59,7 +62,9 @@ CLAUDE_MODELS = {
 CLAUDE_PREFIX_DEFAULTS = [
     ("claude-fable",    {"context": 1_000_000, "in": 10.0, "out": 50.0, "thinking": "omit"}),
     ("claude-mythos",   {"context": 1_000_000, "in": 10.0, "out": 50.0, "thinking": "omit"}),
+    ("claude-opus-5",   {"context": 1_000_000, "in": 5.0,  "out": 25.0, "thinking": "adaptive"}),
     ("claude-opus-4",   {"context": 1_000_000, "in": 5.0,  "out": 25.0, "thinking": "adaptive"}),
+    ("claude-sonnet-5", {"context": 1_000_000, "in": 3.0,  "out": 15.0, "thinking": "adaptive"}),
     ("claude-sonnet-4", {"context": 1_000_000, "in": 3.0,  "out": 15.0, "thinking": "adaptive"}),
     ("claude-haiku-4",  {"context": 200_000,  "in": 1.0,  "out": 5.0,  "thinking": "omit"}),
 ]
