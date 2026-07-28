@@ -64,6 +64,16 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_MODEL = "claude-opus-4-8"
 
+# Shut down when no Godot editor has been connected for this long.
+#
+# The bridge is a TCP *server*, so closing the editor only drops the connection —
+# serve_forever() keeps waiting for a new one and the process outlives the editor
+# that spawned it. BridgeLauncher.stop() cannot be relied on to clean up: under uv
+# the tracked PID belongs to the uv launcher, which exits seconds after delegating
+# to Python, and _exit_tree() never runs at all if Godot crashes or is killed.
+# A self-imposed idle timeout covers every one of those cases.
+IDLE_SHUTDOWN_SECONDS = 15.0
+
 _BUILTIN_COMMANDS = {"/clear", "/compact", "/cost", "/help", "/memory",
                      "/model", "/permissions", "/plan", "/review", "/status", "/vim"}
 
@@ -244,6 +254,7 @@ class AgentBridge:
     - Responses stream back to Godot in real-time
     - MCP tools for the Claude Code path are handled by godot_mcp_server.py;
       direct providers call the Godot HTTP bridge themselves (godot_tools.py)
+    - Exits on its own after idle_timeout seconds without a connected editor
     """
 
     def __init__(
@@ -251,11 +262,13 @@ class AgentBridge:
         host: str = "127.0.0.1",
         port: int = 7777,
         model: str = DEFAULT_MODEL,
-        log_level: str = "INFO"
+        log_level: str = "INFO",
+        idle_timeout: float = IDLE_SHUTDOWN_SECONDS
     ):
         self.host = host
         self.port = port
         self.log_level = log_level
+        self.idle_timeout = idle_timeout
 
         self.tcp_connection: Optional[GodotTCPConnection] = None
         self._answer_queue: asyncio.Queue = asyncio.Queue()
@@ -263,6 +276,10 @@ class AgentBridge:
         self._permission_queue: asyncio.Queue = asyncio.Queue()
         self._session_allowed_tools: set[str] = set()
         self._detected_model: Optional[str] = None
+
+        # Idle shutdown state
+        self._shutdown_event: asyncio.Event = asyncio.Event()
+        self._idle_task: Optional[asyncio.Task] = None
 
         # Runtime configuration (overridden by chat/configure from Godot)
         self._config: dict = {
@@ -295,7 +312,33 @@ class AgentBridge:
 
         logger.info(f"Logging configured at {self.log_level.upper()} level")
 
+    # ------------------------------------------------------------------
+    # Idle shutdown
+    # ------------------------------------------------------------------
 
+    def _cancel_idle_timer(self) -> None:
+        """Stop a pending idle-shutdown countdown (an editor is connected)."""
+        if self._idle_task and not self._idle_task.done():
+            self._idle_task.cancel()
+        self._idle_task = None
+
+    def _start_idle_timer(self) -> None:
+        """Begin counting down to shutdown. Restarts the countdown if one is running."""
+        if self.idle_timeout <= 0:
+            return  # Disabled — run indefinitely
+        self._cancel_idle_timer()
+        self._idle_task = asyncio.create_task(self._idle_shutdown())
+
+    async def _idle_shutdown(self) -> None:
+        """Signal shutdown once idle_timeout elapses with no editor connected."""
+        try:
+            await asyncio.sleep(self.idle_timeout)
+        except asyncio.CancelledError:
+            return
+        logger.info(
+            f"No Godot editor connected for {self.idle_timeout:.0f}s — shutting down."
+        )
+        self._shutdown_event.set()
 
     async def handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         """
@@ -307,6 +350,7 @@ class AgentBridge:
         """
         self.tcp_connection = GodotTCPConnection(reader, writer)
         client_addr = writer.get_extra_info('peername')
+        self._cancel_idle_timer()
         logger.info(f"Godot editor connected from {client_addr}")
 
         try:
@@ -318,6 +362,9 @@ class AgentBridge:
             self.tcp_connection.close()
             self.tcp_connection = None
             logger.info(f"Godot editor disconnected from {client_addr}")
+            # Editor may be reconnecting (plugin reload, Disconnect/Connect) —
+            # give it a window before exiting.
+            self._start_idle_timer()
 
     async def _ask_user_hook(self, hook_input, tool_use_id, context):
         """
@@ -662,10 +709,18 @@ class AgentBridge:
         })
 
         # Run TCP router and processor concurrently.
-        # The task group exits when either task finishes (TCP disconnect or error).
+        #
+        # The router runs in this task rather than as a child: an anyio task group
+        # waits for *all* its children, and _processor loops forever on its queue.
+        # Starting both with start_soon would block here indefinitely once Godot
+        # disconnects, so handle_client's finally block — session teardown and the
+        # idle timer — would never run, leaving the claude CLI subprocess and its
+        # MCP server orphaned. Awaiting the router directly lets us cancel the
+        # processor the moment the TCP connection drops.
         async with anyio.create_task_group() as tg:
-            tg.start_soon(self._tcp_router)
             tg.start_soon(self._processor)
+            await self._tcp_router()
+            tg.cancel_scope.cancel()
 
     def _build_prompt_with_context(self, content: str, context: dict) -> str:
         """
@@ -884,10 +939,18 @@ class AgentBridge:
         addr = server.sockets[0].getsockname()
         logger.info(f"Agent Bridge listening on {addr[0]}:{addr[1]}")
         logger.info(f"Default model: {self._config['model']}")
+        if self.idle_timeout > 0:
+            logger.info(f"Idle shutdown after {self.idle_timeout:.0f}s without a connected editor")
         logger.info(f"Ready for Godot connections...")
 
         async with server:
-            await server.serve_forever()
+            # Nothing is connected yet. If the editor never arrives — or it closes
+            # and doesn't come back — exit instead of lingering as an orphan.
+            self._start_idle_timer()
+            await self._shutdown_event.wait()
+
+        self._cancel_idle_timer()
+        logger.info("Bridge stopped.")
 
 
 async def main():
@@ -900,6 +963,12 @@ async def main():
     parser.add_argument("--model", default=DEFAULT_MODEL, help="Default Claude model (overridden by chat/configure)")
     parser.add_argument("--log-level", default="INFO", help="Logging level")
     parser.add_argument("--project-root", default="", help="Godot project root directory")
+    parser.add_argument(
+        "--idle-timeout",
+        type=float,
+        default=IDLE_SHUTDOWN_SECONDS,
+        help="Exit after this many seconds with no editor connected (0 disables)"
+    )
 
     args = parser.parse_args()
 
@@ -918,7 +987,8 @@ async def main():
         host=args.host,
         port=args.port,
         model=args.model,
-        log_level=args.log_level
+        log_level=args.log_level,
+        idle_timeout=args.idle_timeout
     )
 
     try:
