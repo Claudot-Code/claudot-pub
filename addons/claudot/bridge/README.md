@@ -1,6 +1,6 @@
 # Claudot Bridge Daemon
 
-The bridge daemon connects the Godot editor to an AI chat backend. Three
+The bridge daemon connects the Godot editor to an AI chat backend. Four
 backends are supported, selected at runtime by the Godot plugin via the
 `chat/configure` message:
 
@@ -8,7 +8,12 @@ backends are supported, selected at runtime by the Godot plugin via the
 |---|---|---|---|
 | `claude-code` (default) | Claude Agent SDK → Claude Code CLI | CLI OAuth login, or `ANTHROPIC_API_KEY` if provided | Full Claude Code (files, bash, MCP) |
 | `anthropic` | `providers.py` → Anthropic Messages API | API key (required) | Godot scene/docs tools via HTTP bridge |
+| `openrouter` | `providers.py` → OpenRouter (`openrouter.ai/api/v1`) | API key (required) | Godot scene/docs tools via HTTP bridge |
 | `openai` / `custom` | `providers.py` → any OpenAI-compatible `/chat/completions` | API key (and base URL for `custom`) | Godot scene/docs tools via HTTP bridge |
+
+The `openrouter` backend is the OpenAI-compatible provider with a fixed base
+URL, app attribution headers, and usage accounting — OpenRouter's per-request
+`usage.cost` is surfaced as the message cost in the chat panel.
 
 The `anthropic` backend fully supports **Claude Fable 5** (always-on thinking,
 refusal stop reason, 1M context) as well as Opus 4.8/4.7/4.6, Sonnet 4.6, and
@@ -148,7 +153,7 @@ if needed.
 ```
 addons/claudot/bridge/
 ├── agent_bridge.py          # Chat bridge: TCP server, backend dispatch, Agent SDK path
-├── providers.py             # Direct-API providers (Anthropic Messages API, OpenAI-compatible)
+├── providers.py             # Direct-API providers (Anthropic Messages API, OpenAI-compatible, OpenRouter)
 ├── godot_tools.py           # Godot tool schemas + executor for direct providers
 ├── godot_mcp_server.py      # Standalone MCP server for Claude Code CLI
 ├── godot_docs.py            # Godot class-reference search/cache

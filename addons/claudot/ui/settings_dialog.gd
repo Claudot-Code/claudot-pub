@@ -11,6 +11,7 @@ extends AcceptDialog
 ##                  Anthropic API key optional, used if provided)
 ##   anthropic    — Anthropic Messages API directly (API key required)
 ##   openai       — OpenAI chat completions (API key required)
+##   openrouter   — OpenRouter (openrouter.ai): one key, many models (API key required)
 ##   custom       — any OpenAI-compatible endpoint (base URL required, key optional)
 
 signal settings_changed(config: Dictionary)
@@ -19,19 +20,25 @@ const ES_PROVIDER = "claudot/provider"
 const ES_MODEL_CLAUDE = "claudot/model_claude"
 const ES_MODEL_OPENAI = "claudot/model_openai"
 const ES_MODEL_CUSTOM = "claudot/model_custom"
+const ES_MODEL_OPENROUTER = "claudot/model_openrouter"
 const ES_KEY_ANTHROPIC = "claudot/api_key_anthropic"
 const ES_KEY_OPENAI = "claudot/api_key_openai"
 const ES_KEY_CUSTOM = "claudot/api_key_custom"
+const ES_KEY_OPENROUTER = "claudot/api_key_openrouter"
 const ES_BASE_URL_CUSTOM = "claudot/base_url_custom"
 
 const DEFAULT_CLAUDE_MODEL = "claude-opus-4-8"
 const DEFAULT_OPENAI_MODEL = "gpt-5.1"
+const DEFAULT_OPENROUTER_MODEL = "anthropic/claude-sonnet-5"
+
+const OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
 
 const PROVIDERS = [
 	{"id": "claude-code", "label": "Claude Code (subscription login)"},
 	{"id": "anthropic", "label": "Anthropic API (bring your own key)"},
 	{"id": "openai", "label": "OpenAI API (bring your own key)"},
-	{"id": "custom", "label": "Custom OpenAI-compatible (Ollama, OpenRouter, ...)"},
+	{"id": "openrouter", "label": "OpenRouter (one key, many models)"},
+	{"id": "custom", "label": "Custom OpenAI-compatible (Ollama, LM Studio, ...)"},
 ]
 
 const CLAUDE_MODELS = [
@@ -52,11 +59,29 @@ const OPENAI_MODELS = [
 	{"id": "o3", "label": "o3"},
 ]
 
+# Curated picks from OpenRouter's most-used models (July 2026). "Fetch all"
+# extends the dropdown with the full live catalog from OPENROUTER_MODELS_URL.
+const OPENROUTER_MODELS = [
+	{"id": "anthropic/claude-sonnet-5", "label": "Claude Sonnet 5  —  recommended"},
+	{"id": "anthropic/claude-opus-5", "label": "Claude Opus 5"},
+	{"id": "openai/gpt-5.1", "label": "GPT-5.1"},
+	{"id": "google/gemini-3-flash-preview", "label": "Gemini 3 Flash"},
+	{"id": "deepseek/deepseek-v4-pro", "label": "DeepSeek V4 Pro"},
+	{"id": "deepseek/deepseek-v4-flash", "label": "DeepSeek V4 Flash  —  cheap + fast"},
+	{"id": "moonshotai/kimi-k3", "label": "Kimi K3"},
+	{"id": "z-ai/glm-5.2", "label": "GLM 5.2"},
+	{"id": "minimax/minimax-m3", "label": "MiniMax M3"},
+	{"id": "qwen/qwen3-coder", "label": "Qwen3 Coder"},
+	{"id": "xiaomi/mimo-v2.5", "label": "MiMo V2.5"},
+	{"id": "nvidia/nemotron-3-ultra-550b-a55b", "label": "Nemotron 3 Ultra"},
+]
+
 const PROVIDER_NOTES = {
 	"claude-code": "Uses your Claude Code login (run [code]claude[/code] once to sign in). Full capabilities: file edits, bash, all 20 Godot tools. API key optional — if set, it is used instead of the login.",
 	"anthropic": "Talks to the Anthropic API directly with your key from console.anthropic.com. Godot scene tools work; file editing is not available in this mode. Required for Claude Fable 5 once it moves to API-key-only access.",
 	"openai": "Talks to the OpenAI API with your key from platform.openai.com. Godot scene tools work; file editing is not available in this mode.",
-	"custom": "Any OpenAI-compatible endpoint. Examples: Ollama [code]http://localhost:11434/v1[/code], OpenRouter [code]https://openrouter.ai/api/v1[/code]. Godot scene tools work; file editing is not available in this mode.",
+	"openrouter": "One API key for hundreds of models — get yours at openrouter.ai/keys. Model IDs use [code]vendor/model[/code] format; press Fetch all to browse the full live catalog. Godot scene tools work; file editing is not available in this mode.",
+	"custom": "Any OpenAI-compatible endpoint. Example: Ollama [code]http://localhost:11434/v1[/code]. Godot scene tools work; file editing is not available in this mode.",
 }
 
 var provider_option: OptionButton
@@ -65,10 +90,21 @@ var custom_model_edit: LineEdit
 var api_key_edit: LineEdit
 var base_url_edit: LineEdit
 var note_label: RichTextLabel
+var fetch_models_button: Button
+var model_filter_edit: LineEdit
 
 var _custom_model_row: HBoxContainer
 var _api_key_row: HBoxContainer
 var _base_url_row: HBoxContainer
+var _filter_row: HBoxContainer
+var _http: HTTPRequest
+
+# Dropdown item index → model ID ("" = the "Custom model…" sentinel)
+var _model_ids: Array = []
+
+# Full OpenRouter catalog fetched from OPENROUTER_MODELS_URL, cached for the
+# editor session. Array of {"id": String, "label": String}.
+static var _openrouter_catalog: Array = []
 
 
 func _ready() -> void:
@@ -100,13 +136,35 @@ static func _store(key: String, value: String) -> void:
 
 
 static func get_provider() -> String:
+	_migrate_custom_openrouter()
 	return _setting(ES_PROVIDER, "claude-code")
+
+
+static func _migrate_custom_openrouter() -> void:
+	## One-time migration: users who configured OpenRouter through the "custom"
+	## provider (base URL pointing at openrouter.ai) move to the dedicated
+	## provider, keeping their key and model. Clearing the base URL makes this
+	## a no-op on subsequent calls.
+	if _setting(ES_PROVIDER, "") != "custom":
+		return
+	if not _setting(ES_BASE_URL_CUSTOM, "").contains("openrouter.ai"):
+		return
+	_store(ES_PROVIDER, "openrouter")
+	var key = _setting(ES_KEY_CUSTOM, "")
+	if key != "":
+		_store(ES_KEY_OPENROUTER, key)
+	var model = _setting(ES_MODEL_CUSTOM, "")
+	if model != "":
+		_store(ES_MODEL_OPENROUTER, model)
+	_store(ES_BASE_URL_CUSTOM, "")
 
 
 static func get_model_for_provider(provider: String) -> String:
 	match provider:
 		"openai":
 			return _setting(ES_MODEL_OPENAI, DEFAULT_OPENAI_MODEL)
+		"openrouter":
+			return _setting(ES_MODEL_OPENROUTER, DEFAULT_OPENROUTER_MODEL)
 		"custom":
 			return _setting(ES_MODEL_CUSTOM, "")
 		_:
@@ -117,6 +175,8 @@ static func set_model_for_provider(provider: String, model: String) -> void:
 	match provider:
 		"openai":
 			_store(ES_MODEL_OPENAI, model)
+		"openrouter":
+			_store(ES_MODEL_OPENROUTER, model)
 		"custom":
 			_store(ES_MODEL_CUSTOM, model)
 		_:
@@ -134,6 +194,8 @@ static func get_config() -> Dictionary:
 			api_key = _setting(ES_KEY_ANTHROPIC, "")
 		"openai":
 			api_key = _setting(ES_KEY_OPENAI, "")
+		"openrouter":
+			api_key = _setting(ES_KEY_OPENROUTER, "")
 		"custom":
 			api_key = _setting(ES_KEY_CUSTOM, "")
 			base_url = _setting(ES_BASE_URL_CUSTOM, "")
@@ -149,6 +211,8 @@ static func get_known_models(provider: String) -> Array:
 	match provider:
 		"openai":
 			return OPENAI_MODELS
+		"openrouter":
+			return OPENROUTER_MODELS
 		"custom":
 			return []
 		_:
@@ -189,6 +253,24 @@ func _build_ui() -> void:
 	model_option.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	model_option.item_selected.connect(_on_model_selected)
 	model_row.add_child(model_option)
+	fetch_models_button = Button.new()
+	fetch_models_button.text = "Fetch all"
+	fetch_models_button.tooltip_text = "Download the full model catalog from openrouter.ai"
+	fetch_models_button.pressed.connect(_on_fetch_models_pressed)
+	model_row.add_child(fetch_models_button)
+
+	# Filter row (visible once the OpenRouter catalog has been fetched)
+	_filter_row = HBoxContainer.new()
+	vbox.add_child(_filter_row)
+	var filter_label = Label.new()
+	filter_label.text = "Filter"
+	filter_label.custom_minimum_size.x = 110
+	_filter_row.add_child(filter_label)
+	model_filter_edit = LineEdit.new()
+	model_filter_edit.placeholder_text = "type to narrow the model list"
+	model_filter_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	model_filter_edit.text_changed.connect(_on_model_filter_changed)
+	_filter_row.add_child(model_filter_edit)
 
 	# Custom model row (visible when "Custom model…" selected, or custom provider)
 	_custom_model_row = HBoxContainer.new()
@@ -247,6 +329,11 @@ func _build_ui() -> void:
 	storage_label.modulate = Color(1, 1, 1, 0.6)
 	vbox.add_child(storage_label)
 
+	_http = HTTPRequest.new()
+	_http.timeout = 15.0
+	_http.request_completed.connect(_on_models_fetch_completed)
+	add_child(_http)
+
 
 func _provider_id() -> String:
 	var idx = provider_option.selected
@@ -262,23 +349,45 @@ func _on_provider_selected(_index: int) -> void:
 
 
 func _on_model_selected(index: int) -> void:
-	# Last item is always "Custom model…" — reveal the free-text field
-	var is_custom = index == model_option.item_count - 1
+	# The "" sentinel is the "Custom model…" entry — reveal the free-text field
+	var is_custom = index >= 0 and index < _model_ids.size() and _model_ids[index] == ""
 	_custom_model_row.visible = is_custom or _provider_id() == "custom"
+
+
+func _dropdown_models(provider: String) -> Array:
+	## Models shown in the dropdown: the curated list, extended with the fetched
+	## OpenRouter catalog (deduplicated) and narrowed by the filter text.
+	var models = get_known_models(provider).duplicate()
+	if provider != "openrouter":
+		return models
+	if not _openrouter_catalog.is_empty():
+		var known = {}
+		for m in models:
+			known[m["id"]] = true
+		for m in _openrouter_catalog:
+			if not known.has(m["id"]):
+				models.append(m)
+	var filter_text = model_filter_edit.text.strip_edges().to_lower() if model_filter_edit else ""
+	if filter_text != "":
+		models = models.filter(func(m): return filter_text in String(m["id"]).to_lower())
+	return models
 
 
 func _populate_models(provider: String, selected_model: String) -> void:
 	model_option.clear()
-	var models = get_known_models(provider)
+	_model_ids.clear()
+	var models = _dropdown_models(provider)
 	var selected_idx = -1
 	for i in models.size():
 		model_option.add_item(models[i]["label"])
+		_model_ids.append(models[i]["id"])
 		if models[i]["id"] == selected_model:
 			selected_idx = i
 	model_option.add_item("Custom model…")
+	_model_ids.append("")
 
 	if models.is_empty():
-		# Custom provider: only the free-text field matters
+		# No known models (custom provider): only the free-text field matters
 		model_option.select(0)
 		custom_model_edit.text = selected_model
 	elif selected_idx >= 0:
@@ -293,6 +402,45 @@ func _populate_models(provider: String, selected_model: String) -> void:
 		custom_model_edit.text = ""
 
 
+func _on_model_filter_changed(_text: String) -> void:
+	_populate_models(_provider_id(), _selected_model())
+	_update_visibility()
+
+
+func _on_fetch_models_pressed() -> void:
+	fetch_models_button.disabled = true
+	fetch_models_button.text = "Fetching…"
+	var err = _http.request(OPENROUTER_MODELS_URL)
+	if err != OK:
+		_fetch_failed("HTTPRequest error %d" % err)
+
+
+func _fetch_failed(reason: String) -> void:
+	fetch_models_button.disabled = false
+	fetch_models_button.text = "Fetch failed — retry"
+	push_warning("Claudot: could not fetch OpenRouter model catalog: " + reason)
+
+
+func _on_models_fetch_completed(result: int, response_code: int, _headers: PackedStringArray, body: PackedByteArray) -> void:
+	if result != HTTPRequest.RESULT_SUCCESS or response_code != 200:
+		_fetch_failed("result=%d http=%d" % [result, response_code])
+		return
+	var parsed = JSON.parse_string(body.get_string_from_utf8())
+	if typeof(parsed) != TYPE_DICTIONARY or not (parsed.get("data") is Array):
+		_fetch_failed("unexpected response shape")
+		return
+	var catalog: Array = []
+	for m in parsed["data"]:
+		if m is Dictionary and m.get("id") is String:
+			catalog.append({"id": m["id"], "label": m["id"]})
+	catalog.sort_custom(func(a, b): return a["id"] < b["id"])
+	_openrouter_catalog = catalog
+	fetch_models_button.disabled = false
+	fetch_models_button.text = "Refresh (%d)" % catalog.size()
+	_populate_models(_provider_id(), _selected_model())
+	_update_visibility()
+
+
 func _load_key_for_provider(provider: String) -> void:
 	match provider:
 		"claude-code", "anthropic":
@@ -301,6 +449,9 @@ func _load_key_for_provider(provider: String) -> void:
 		"openai":
 			api_key_edit.text = _setting(ES_KEY_OPENAI, "")
 			api_key_edit.placeholder_text = "sk-..."
+		"openrouter":
+			api_key_edit.text = _setting(ES_KEY_OPENROUTER, "")
+			api_key_edit.placeholder_text = "sk-or-..."
 		"custom":
 			api_key_edit.text = _setting(ES_KEY_CUSTOM, "")
 			api_key_edit.placeholder_text = "key (optional for local endpoints)"
@@ -310,7 +461,10 @@ func _load_key_for_provider(provider: String) -> void:
 func _update_visibility() -> void:
 	var provider = _provider_id()
 	_base_url_row.visible = provider == "custom"
-	var is_custom_model = model_option.selected == model_option.item_count - 1
+	fetch_models_button.visible = provider == "openrouter"
+	_filter_row.visible = provider == "openrouter" and not _openrouter_catalog.is_empty()
+	var idx = model_option.selected
+	var is_custom_model = idx >= 0 and idx < _model_ids.size() and _model_ids[idx] == ""
 	_custom_model_row.visible = is_custom_model or provider == "custom"
 	note_label.text = PROVIDER_NOTES.get(provider, "")
 
@@ -328,19 +482,23 @@ func _load_from_settings() -> void:
 
 
 func _selected_model() -> String:
-	var provider = _provider_id()
-	var models = get_known_models(provider)
 	var idx = model_option.selected
-	if provider == "custom" or idx >= models.size() or idx < 0:
+	if idx < 0 or idx >= _model_ids.size() or _model_ids[idx] == "":
 		return custom_model_edit.text.strip_edges()
-	return models[idx]["id"]
+	return _model_ids[idx]
 
 
 func _on_confirmed() -> void:
 	var provider = _provider_id()
 	var model = _selected_model()
 	if model.is_empty():
-		model = DEFAULT_OPENAI_MODEL if provider == "openai" else DEFAULT_CLAUDE_MODEL
+		match provider:
+			"openai":
+				model = DEFAULT_OPENAI_MODEL
+			"openrouter":
+				model = DEFAULT_OPENROUTER_MODEL
+			_:
+				model = DEFAULT_CLAUDE_MODEL
 
 	_store(ES_PROVIDER, provider)
 	set_model_for_provider(provider, model)
@@ -349,6 +507,8 @@ func _on_confirmed() -> void:
 			_store(ES_KEY_ANTHROPIC, api_key_edit.text.strip_edges())
 		"openai":
 			_store(ES_KEY_OPENAI, api_key_edit.text.strip_edges())
+		"openrouter":
+			_store(ES_KEY_OPENROUTER, api_key_edit.text.strip_edges())
 		"custom":
 			_store(ES_KEY_CUSTOM, api_key_edit.text.strip_edges())
 			_store(ES_BASE_URL_CUSTOM, base_url_edit.text.strip_edges())

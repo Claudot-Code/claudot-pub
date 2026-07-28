@@ -56,6 +56,7 @@ import providers
 from providers import (
     AnthropicAPIProvider,
     OpenAICompatProvider,
+    OpenRouterProvider,
     ProviderError,
     context_window_for_model,
 )
@@ -559,6 +560,18 @@ class AgentBridge:
                     "Open Claudot Settings and enter your key (console.anthropic.com)."
                 )
             self._direct_provider = AnthropicAPIProvider(
+                api_key=self._config["api_key"],
+                model=self._config["model"],
+                system_prompt=_DIRECT_SYSTEM_PROMPT,
+                base_url=self._config["base_url"],
+            )
+        elif provider == "openrouter":
+            if not self._config["api_key"]:
+                raise ProviderError(
+                    "OpenRouter provider selected but no API key configured. "
+                    "Open Claudot Settings and enter your key (openrouter.ai/keys)."
+                )
+            self._direct_provider = OpenRouterProvider(
                 api_key=self._config["api_key"],
                 model=self._config["model"],
                 system_prompt=_DIRECT_SYSTEM_PROMPT,

@@ -7,9 +7,9 @@
 # ]
 # ///
 """
-Smoke test for providers.py — runs fake Anthropic / OpenAI-compatible / Godot
-bridge servers on localhost and drives both direct providers through a full
-tool-loop turn, plus a Claude Fable 5 refusal case.
+Smoke test for providers.py — runs fake Anthropic / OpenAI-compatible /
+OpenRouter / Godot bridge servers on localhost and drives the direct providers
+through a full tool-loop turn, plus a Claude Fable 5 refusal case.
 
 Run:  uv run test_providers_smoke.py
 """
@@ -22,14 +22,16 @@ import sys
 FAKE_GODOT_PORT = 17778
 FAKE_ANTHROPIC_PORT = 17779
 FAKE_OPENAI_PORT = 17780
+FAKE_OPENROUTER_PORT = 17781
 
 os.environ["GODOT_BRIDGE_URL"] = f"http://127.0.0.1:{FAKE_GODOT_PORT}"
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import providers  # noqa: E402
-from providers import AnthropicAPIProvider, OpenAICompatProvider  # noqa: E402
+from providers import AnthropicAPIProvider, OpenAICompatProvider, OpenRouterProvider  # noqa: E402
 
 CAPTURED_BODIES: list[dict] = []
+CAPTURED_HEADERS: list[dict] = []
 
 
 async def _read_http_request(reader: asyncio.StreamReader) -> tuple[str, dict, bytes]:
@@ -168,6 +170,36 @@ async def fake_openai_handler(reader, writer):
     writer.close()
 
 
+# ----------------------------------------------------------- fake OpenRouter
+async def fake_openrouter_handler(reader, writer):
+    _, headers, body = await _read_http_request(reader)
+    req = json.loads(body)
+    CAPTURED_BODIES.append(req)
+    CAPTURED_HEADERS.append(headers)
+    has_tool_msg = any(m.get("role") == "tool" for m in req["messages"])
+
+    if not has_tool_msg:
+        events = [
+            {"choices": [{"index": 0, "delta": {"role": "assistant", "tool_calls": [
+                {"index": 0, "id": "call_1", "type": "function",
+                 "function": {"name": "get_editor_context", "arguments": ""}}]}, "finish_reason": None}]},
+            {"choices": [{"index": 0, "delta": {"tool_calls": [
+                {"index": 0, "function": {"arguments": "{}"}}]}, "finish_reason": None}]},
+            {"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]},
+            {"choices": [], "usage": {"prompt_tokens": 80, "completion_tokens": 20, "cost": 0.0021}},
+        ]
+    else:
+        events = [
+            {"choices": [{"index": 0, "delta": {"content": "All "}, "finish_reason": None}]},
+            {"choices": [{"index": 0, "delta": {"content": "good."}, "finish_reason": None}]},
+            {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]},
+            {"choices": [], "usage": {"prompt_tokens": 120, "completion_tokens": 5, "cost": 0.0009}},
+        ]
+    writer.write(_sse_response(events))
+    await writer.drain()
+    writer.close()
+
+
 async def collect(provider, prompt):
     return [e async for e in provider.run_turn(prompt)]
 
@@ -183,6 +215,7 @@ async def main() -> int:
         await asyncio.start_server(fake_godot_handler, "127.0.0.1", FAKE_GODOT_PORT),
         await asyncio.start_server(fake_anthropic_handler, "127.0.0.1", FAKE_ANTHROPIC_PORT),
         await asyncio.start_server(fake_openai_handler, "127.0.0.1", FAKE_OPENAI_PORT),
+        await asyncio.start_server(fake_openrouter_handler, "127.0.0.1", FAKE_OPENROUTER_PORT),
     ]
     ok = True
 
@@ -239,6 +272,26 @@ async def main() -> int:
     roles = [m["role"] for m in second_body["messages"]]
     ok &= expect(roles == ["system", "user", "assistant", "tool"], f"openai history shape {roles}")
     ok &= expect(second_body["messages"][3]["tool_call_id"] == "call_1", "tool_call_id preserved")
+
+    print("== OpenRouterProvider: tool loop + attribution + cost ==")
+    CAPTURED_BODIES.clear()
+    CAPTURED_HEADERS.clear()
+    p = OpenRouterProvider("sk-or-test", "deepseek/deepseek-v4-flash", "system prompt here",
+                           base_url=f"http://127.0.0.1:{FAKE_OPENROUTER_PORT}")
+    events = await collect(p, "What scene am I in?")
+    types = [e["type"] for e in events]
+    ok &= expect(types == ["tool_use", "text", "result"], f"event sequence {types}")
+    ok &= expect(events[1]["text"] == "All good.", "streamed text assembled")
+    headers = CAPTURED_HEADERS[0]
+    ok &= expect(headers.get("authorization") == "Bearer sk-or-test", "bearer auth header")
+    ok &= expect(headers.get("x-title") == "Claudot", "X-Title attribution header")
+    ok &= expect("http-referer" in headers, "HTTP-Referer attribution header")
+    ok &= expect(CAPTURED_BODIES[0].get("usage") == {"include": True}, "usage accounting requested")
+    result = events[-1]
+    ok &= expect(abs(result["cost_usd"] - 0.003) < 1e-9, f"cost accumulated from usage chunks ({result['cost_usd']})")
+    ok &= expect(result["usage"]["total_tokens"] == 225, f"usage accumulated {result['usage']}")
+    ok &= expect(OpenRouterProvider("k", "m", "s").base_url == "https://openrouter.ai/api/v1",
+                 "default base URL is openrouter.ai")
 
     for s in servers:
         s.close()

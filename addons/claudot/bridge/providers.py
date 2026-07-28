@@ -8,8 +8,10 @@ the bring-your-own-API-key alternatives:
 - AnthropicAPIProvider  — Anthropic Messages API over raw HTTP (httpx).
   Supports Claude Fable 5 (always-on thinking, refusal stop reason, 1M
   context) plus the Opus/Sonnet/Haiku 4.x families.
-- OpenAICompatProvider  — any /chat/completions endpoint (OpenAI, OpenRouter,
-  Ollama, Gemini's compat endpoint, ...) via a configurable base URL.
+- OpenAICompatProvider  — any /chat/completions endpoint (OpenAI, Ollama,
+  Gemini's compat endpoint, ...) via a configurable base URL.
+- OpenRouterProvider    — OpenRouter (openrouter.ai): OpenAI-compatible with a
+  fixed base URL, app attribution headers, and usage-based cost reporting.
 
 Both run their own agentic tool loop against the Godot editor through
 godot_tools.execute_tool(), and emit a provider-neutral event stream that
@@ -374,8 +376,8 @@ class AnthropicAPIProvider(DirectChatProvider):
 class OpenAICompatProvider(DirectChatProvider):
     """
     OpenAI-compatible /chat/completions provider with streaming and a Godot
-    tool loop. Works with OpenAI, OpenRouter, Ollama, and any other endpoint
-    speaking the chat-completions wire format (set base_url accordingly).
+    tool loop. Works with OpenAI, Ollama, and any other endpoint speaking the
+    chat-completions wire format (set base_url accordingly).
     """
 
     LABEL = "OpenAI-compatible API"
@@ -411,6 +413,7 @@ class OpenAICompatProvider(DirectChatProvider):
         last_text = ""
         total_in = 0
         total_out = 0
+        total_cost = 0.0
         num_requests = 0
 
         for _ in range(MAX_TOOL_ITERATIONS):
@@ -451,6 +454,10 @@ class OpenAICompatProvider(DirectChatProvider):
                                 if usage:
                                     total_in += usage.get("prompt_tokens", 0)
                                     total_out += usage.get("completion_tokens", 0)
+                                    # OpenRouter reports USD cost in the final usage chunk
+                                    cost = usage.get("cost")
+                                    if isinstance(cost, (int, float)):
+                                        total_cost += cost
                                 choices = chunk.get("choices") or []
                                 if not choices:
                                     continue
@@ -530,7 +537,7 @@ class OpenAICompatProvider(DirectChatProvider):
         yield {
             "type": "result",
             "content": last_text,
-            "cost_usd": 0.0,
+            "cost_usd": total_cost,
             "duration_ms": duration_ms,
             "num_turns": num_requests,
             "usage": {
@@ -540,3 +547,32 @@ class OpenAICompatProvider(DirectChatProvider):
                 "context_pct": 0.0,
             },
         }
+
+
+class OpenRouterProvider(OpenAICompatProvider):
+    """
+    OpenRouter (openrouter.ai) — one API key for hundreds of models, addressed
+    as vendor/model slugs. Speaks the chat-completions wire format with app
+    attribution headers and per-request cost reporting via usage accounting.
+    """
+
+    LABEL = "OpenRouter"
+
+    OPENROUTER_API_URL = "https://openrouter.ai/api/v1"
+
+    def __init__(self, api_key: str, model: str, system_prompt: str, base_url: str = ""):
+        super().__init__(api_key, model, system_prompt, base_url or self.OPENROUTER_API_URL)
+
+    def _headers(self) -> dict:
+        headers = super()._headers()
+        # Optional app attribution — identifies Claudot on openrouter.ai rankings
+        headers["HTTP-Referer"] = "https://github.com/Claudot-Code/claudot-pub"
+        headers["X-Title"] = "Claudot"
+        return headers
+
+    def _request_body(self) -> dict:
+        body = super()._request_body()
+        # Ask for usage accounting: the final streamed chunk then carries
+        # usage.cost (USD), which run_turn() surfaces as cost_usd.
+        body["usage"] = {"include": True}
+        return body

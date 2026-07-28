@@ -2,7 +2,7 @@
 
 **AI integration for the Godot editor.** Inspect scenes, modify nodes, run your game, capture screenshots, and chat with AI -- all without leaving the editor.
 
-Built around Claude Code, with bring-your-own-API-key support for the Anthropic API (including **Claude Fable 5**), OpenAI, and any OpenAI-compatible endpoint (Ollama, OpenRouter, ...).
+Built around Claude Code, with bring-your-own-API-key support for the Anthropic API (including **Claude Fable 5**), OpenAI, **OpenRouter** (hundreds of models with one key), and any OpenAI-compatible endpoint (Ollama, LM Studio, ...).
 
 ![Claudot in the Godot editor](claudot_ui_examples/editor_screenshot.png)
 
@@ -89,9 +89,12 @@ Click **Settings** in the info bar to choose how the chat panel talks to an AI m
 | **Claude Code** (default) | Your Claude subscription login (`claude` CLI). An Anthropic API key may optionally be supplied and takes precedence. | Everything: file edits, bash, all 20 Godot MCP tools |
 | **Anthropic API** | API key from [console.anthropic.com](https://console.anthropic.com) | Chat + 16 Godot scene/docs tools (no file editing) |
 | **OpenAI API** | API key from [platform.openai.com](https://platform.openai.com) | Chat + 16 Godot scene/docs tools (no file editing) |
-| **Custom OpenAI-compatible** | Base URL + optional key — works with Ollama (`http://localhost:11434/v1`), OpenRouter (`https://openrouter.ai/api/v1`), etc. | Chat + 16 Godot scene/docs tools (no file editing) |
+| **OpenRouter** | API key from [openrouter.ai/keys](https://openrouter.ai/keys) — one key for hundreds of models (`vendor/model` IDs) | Chat + 16 Godot scene/docs tools (no file editing), with real per-message cost reporting |
+| **Custom OpenAI-compatible** | Base URL + optional key — works with Ollama (`http://localhost:11434/v1`), LM Studio, etc. | Chat + 16 Godot scene/docs tools (no file editing) |
 
 Available Claude models include **Claude Fable 5** (Anthropic's most capable model), **Claude Opus 4.8** (recommended default), Opus 4.7/4.6, Sonnet 4.6, and Haiku 4.5. A quick model switcher lives directly in the info bar; the Settings dialog also accepts any custom model ID.
+
+The OpenRouter provider ships with a curated list of popular models (Claude Sonnet 5 / Opus 5, GPT-5.1, Gemini 3 Flash, DeepSeek V4, Kimi K3, GLM 5.2, Qwen3 Coder, ...) and a **Fetch all** button that pulls the full live catalog from openrouter.ai so you can filter and pick any model. If you previously used OpenRouter through the Custom provider, your key and model are migrated automatically.
 
 **API keys are stored in your Godot editor settings** — outside the project directory, so they can never be committed to version control.
 
