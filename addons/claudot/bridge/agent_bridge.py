@@ -74,8 +74,43 @@ DEFAULT_MODEL = "claude-opus-4-8"
 # A self-imposed idle timeout covers every one of those cases.
 IDLE_SHUTDOWN_SECONDS = 15.0
 
-_BUILTIN_COMMANDS = {"/clear", "/compact", "/cost", "/help", "/memory",
-                     "/model", "/permissions", "/plan", "/review", "/status", "/vim"}
+# Slash commands the bridge handles itself.
+#
+# Everything not listed here is forwarded to the backend, because the Agent SDK
+# already handles built-in commands: /usage, /cost, /model and /compact come back
+# with real data, and anything it cannot do returns "<command> isn't available in
+# this environment" — an accurate answer we should not replace with a guess.
+#
+# The exceptions:
+#   /clear, /plan  — bridge-side state the backend knows nothing about
+#   /help, /status — reported unavailable by the SDK, and the panel can answer
+#                    them more usefully than the CLI would anyway
+_BUILTIN_COMMANDS = {"/clear", "/plan", "/help", "/status"}
+
+# Answered by the bridge, with the description shown by /help.
+_PANEL_COMMANDS = {
+    "/clear": "reset the conversation",
+    "/plan": "toggle plan mode",
+    "/status": "show provider, model, context window and working directory",
+    "/help": "list these commands",
+}
+
+# Forwarded commands the backend runs without printing anything. Forwarding is
+# correct — they work — but an empty response is indistinguishable from a broken
+# panel, so the bridge adds its own confirmation once the turn completes.
+_SILENT_COMMAND_NOTES = {
+    "/compact": "Conversation history compacted. This summarises Claude's context, "
+                "not the transcript above — the panel looks unchanged. The context "
+                "percentage in the status bar updates on your next message.",
+}
+
+# Verified to work through the SDK — listed by /help so users know they exist.
+_FORWARDED_COMMANDS = {
+    "/usage": "subscription usage and reset times",
+    "/cost": "same as /usage on a subscription plan",
+    "/model": "the model Claude Code is running",
+    "/compact": "compact the conversation history",
+}
 
 _GDSCRIPT_GUIDE = """## GDScript 4.x — Required Patterns
 
@@ -433,8 +468,16 @@ class AgentBridge:
             }
         }
 
+    async def _send_system(self, message: str) -> None:
+        """Send a system-level notice to the Godot panel."""
+        await self.tcp_connection.send_message({
+            "jsonrpc": "2.0",
+            "method": "chat/system",
+            "params": {"message": message}
+        })
+
     async def _handle_builtin_command(self, command: str) -> None:
-        """Handle a built-in slash command locally without forwarding to the SDK."""
+        """Answer a built-in slash command locally without forwarding to the backend."""
         if command == "/clear":
             # Reset backend conversation state so the model forgets too,
             # not just the UI transcript.
@@ -444,6 +487,7 @@ class AgentBridge:
                 "method": "chat/clear",
                 "params": {}
             })
+
         elif command == "/plan":
             self._plan_mode = not self._plan_mode
             state_msg = (
@@ -455,6 +499,42 @@ class AgentBridge:
                 "method": "chat/assistant_text",
                 "params": {"content": state_msg, "is_partial": False}
             })
+
+        elif command == "/status":
+            await self._send_system(
+                f"[b]Claudot bridge[/b]\n"
+                f"Provider: [code]{self._config['provider']}[/code]\n"
+                f"Model: [code]{self._config['model']}[/code]\n"
+                f"Context window: {self._context_window_tokens:,} tokens\n"
+                f"Working directory: [code]{os.getcwd()}[/code]\n"
+                f"Plan mode: {'on' if self._plan_mode else 'off'}\n\n"
+                "For subscription usage and reset times, use [code]/usage[/code]."
+            )
+
+        elif command == "/help":
+            panel = "\n".join(
+                f"  [code]{name}[/code] — {desc}"
+                for name, desc in sorted(_PANEL_COMMANDS.items())
+            )
+            forwarded = "\n".join(
+                f"  [code]{name}[/code] — {desc}"
+                for name, desc in sorted(_FORWARDED_COMMANDS.items())
+            )
+            await self._send_system(
+                f"[b]Handled by Claudot:[/b]\n{panel}\n\n"
+                f"[b]Passed through to Claude Code:[/b]\n{forwarded}\n\n"
+                "Other commands are forwarded too; Claude Code will say so if it "
+                "cannot run one here."
+            )
+
+        else:
+            # Unreachable while _BUILTIN_COMMANDS and the branches above agree.
+            # Kept so a future addition to the set can never fall through silently.
+            await self._send_system(
+                f"[code]{command}[/code] is not implemented in the Claudot panel. "
+                f"Type [code]/help[/code] to see what is."
+            )
+
         # Send a synthetic response to reset is_working state in Godot
         await self.tcp_connection.send_message({
             "jsonrpc": "2.0",
@@ -667,7 +747,15 @@ class AgentBridge:
                 if self._config["provider"] == "claude-code":
                     client = await self._ensure_sdk_client()
                     await client.query(prompt)
-                    await self._stream_response_to_godot(client)
+                    final_text = await self._stream_response_to_godot(client)
+                    # A slash command that returned nothing looks identical to a
+                    # broken panel — say what happened instead of leaving it blank.
+                    stripped = content.strip()
+                    if stripped.startswith("/") and not final_text.strip():
+                        await self._send_system(_SILENT_COMMAND_NOTES.get(
+                            stripped,
+                            f"Claude Code ran [code]{stripped}[/code] without returning any output."
+                        ))
                 else:
                     provider = self._ensure_direct_provider()
                     await self._stream_direct_turn(provider, prompt)
@@ -846,12 +934,16 @@ class AgentBridge:
                     f"${event.get('cost_usd', 0.0):.4f}, {event.get('duration_ms', 0)}ms, {pct}% ctx)"
                 )
 
-    async def _stream_response_to_godot(self, client: ClaudeSDKClient):
+    async def _stream_response_to_godot(self, client: ClaudeSDKClient) -> str:
         """
         Stream Claude's response back to Godot in real-time (Agent SDK path).
 
         Args:
             client: Claude SDK client
+
+        Returns:
+            The final assistant text, or "" if the turn produced none. Callers use
+            this to detect commands that ran without reporting anything.
         """
         # Send stream start marker
         await self.tcp_connection.send_message({
@@ -926,7 +1018,9 @@ class AgentBridge:
 
                 pct_str = f", {usage_data.get('context_pct', '?')}% ctx" if usage_data else ""
                 logger.info(f"Response complete ({message.num_turns} turns, ${message.total_cost_usd:.4f}, {message.duration_ms}ms{pct_str})")
-                break
+                return final_text
+
+        return ""
 
     async def run(self):
         """Start the bridge daemon TCP server."""
