@@ -425,6 +425,15 @@ func _on_message_received(message: Dictionary) -> void:
 	elif message.get("method") == "chat/clear":
 		conversation_tab.clear_conversation()
 
+	# Handle chat/system from bridge — the ready notice and slash command replies.
+	# Without this branch those messages arrive over TCP and are silently dropped,
+	# so the panel looks unresponsive to commands the bridge answered fine.
+	elif message.get("method") == "chat/system":
+		if message.has("params") and message.params is Dictionary and message.params.has("message"):
+			var system_text = str(message.params.message)
+			if not system_text.is_empty():
+				conversation_tab.append_system_message(system_text)
+
 	# Handle configuration acknowledgment from bridge
 	elif message.get("method") == "chat/configured":
 		if message.has("params") and message.params is Dictionary:
