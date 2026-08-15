@@ -22,6 +22,10 @@ Three chat backends, selected at runtime via the chat/configure message:
 - "openai" / "custom": any OpenAI-compatible /chat/completions endpoint with
   a user-supplied key (OpenAI, OpenRouter, Ollama, ...). Same tool surface
   as "anthropic".
+- "codex": OpenAI Codex via the local `codex app-server` (codex_provider.py).
+  Runs the full Codex agent harness with a workspace-write sandbox, so it can
+  edit files on disk AND drive the Godot scene tools (exposed to it as an MCP
+  server). Uses the CLI's `codex login` (ChatGPT subscription) or an API key.
 
 Architecture:
 - TCP server (default port 7777, per-project port in practice) for Godot
@@ -60,6 +64,7 @@ from providers import (
     ProviderError,
     context_window_for_model,
 )
+from codex_provider import CodexProvider
 
 logger = logging.getLogger(__name__)
 
@@ -159,6 +164,27 @@ Scene modifications (set_node_property, create_node, delete_node, reparent_node)
 ## Limits
 
 You can NOT edit files on disk in this mode. To change a script, show the user the complete updated GDScript in a code block and tell them which file to paste it into. You CAN read scripts (get_node_script), modify scene nodes and properties, run the game, run tests, and read debugger output.
+
+""" + _GDSCRIPT_GUIDE
+
+_CODEX_SYSTEM_PROMPT = """You are an expert Godot 4 GDScript developer embedded in the Godot editor as an AI assistant.
+
+You run inside the Codex agent harness with a workspace-write sandbox: you CAN edit files on
+disk directly (create/modify .gd, .tscn, and other project files) AND you have MCP scene tools
+that inspect and modify the live Godot editor. Use both proactively; never wait for the user to ask.
+
+## MCP Scene Tools (server: claudot) — Use Proactively
+
+- Before ANY scene work: call get_editor_context()
+- Before reading/editing a node's script: call get_node_script(node_path)
+- Before set_node_property or scene mutations: call get_scene_state() or get_node_property()
+- To find .gd files: call search_files(extensions=[".gd"]) — never guess paths
+- Before writing GDScript involving a built-in class you are unsure about: call godot_search_docs() or godot_get_class_docs()
+- After writing or changing code: call run_tests(), then get_debugger_output() and get_debugger_errors()
+- After visual scene changes: call capture_screenshot()
+
+Scene modifications (set_node_property, create_node, delete_node, reparent_node) are undoable with Ctrl+Z.
+Prefer editing files on disk for script changes; use the scene tools for live node/property/scene work.
 
 """ + _GDSCRIPT_GUIDE
 
@@ -278,6 +304,9 @@ class AgentBridge:
         self._client: Optional[ClaudeSDKClient] = None
         self._sdk_stack: Optional[AsyncExitStack] = None
         self._direct_provider = None
+        # Codex runs an out-of-process subprocess that needs an awaited close();
+        # kept in its own slot so _teardown_sessions can shut it down cleanly.
+        self._codex_provider: Optional[CodexProvider] = None
         self._env_key_injected: bool = False
 
         # Setup logging
@@ -496,6 +525,12 @@ class AgentBridge:
                 logger.warning(f"Error closing Claude SDK session: {e}")
             self._sdk_stack = None
             self._client = None
+        if self._codex_provider:
+            try:
+                await self._codex_provider.close()
+            except Exception as e:
+                logger.warning(f"Error closing Codex session: {e}")
+            self._codex_provider = None
         self._direct_provider = None
         if not keep_env and self._env_key_injected:
             os.environ.pop("ANTHROPIC_API_KEY", None)
@@ -546,6 +581,60 @@ class AgentBridge:
             pass
 
         return self._client
+
+    async def _codex_approval_callback(self, tool_name: str, summary: str) -> str:
+        """Route a Codex approval request through the existing permission plumbing.
+
+        Mirrors _permission_hook: honours a prior "allow_all" (stored in
+        _session_allowed_tools), otherwise asks Godot via chat/permission_request
+        and blocks on the shared _permission_queue (fed by _tcp_router).
+        Returns "allow" | "allow_all" | "deny".
+        """
+        if tool_name in self._session_allowed_tools:
+            return "allow"
+        await self.tcp_connection.send_message({
+            "jsonrpc": "2.0",
+            "method": "chat/permission_request",
+            "params": {"tool_name": tool_name, "summary": summary}
+        })
+        decision = await self._permission_queue.get()
+        if decision == "allow_all":
+            self._session_allowed_tools.add(tool_name)
+            return "allow_all"
+        return "allow" if decision == "allow" else "deny"
+
+    def _codex_mcp_server_config(self) -> dict:
+        """Resolve the Godot MCP server command/args/env to hand to Codex.
+
+        Uses the same interpreter running this bridge and the godot_mcp_server.py
+        sitting next to this file. GODOT_BRIDGE_URL matches godot_tools.py's
+        default (the editor HTTP bridge is fixed at port 7778).
+        """
+        mcp_server = str(Path(__file__).resolve().parent / "godot_mcp_server.py")
+        bridge_url = os.environ.get("GODOT_BRIDGE_URL", "http://127.0.0.1:7778")
+        return {
+            "command": sys.executable,
+            "args": [mcp_server],
+            "env": {"GODOT_BRIDGE_URL": bridge_url},
+        }
+
+    def _ensure_codex_provider(self):
+        """Create the Codex app-server provider if it isn't running yet."""
+        if self._codex_provider:
+            return self._codex_provider
+        self._codex_provider = CodexProvider(
+            model=self._config["model"],
+            system_prompt=_CODEX_SYSTEM_PROMPT,
+            cwd=os.getcwd(),
+            api_key=self._config["api_key"],
+            approval_callback=self._codex_approval_callback,
+            mcp_server_config=self._codex_mcp_server_config(),
+        )
+        # Stored in _direct_provider too so _stream_direct_turn and the
+        # chat/cancel interrupt path treat it uniformly with the direct providers.
+        self._direct_provider = self._codex_provider
+        logger.info(f"Codex provider ready: {self._config['model']}")
+        return self._codex_provider
 
     def _ensure_direct_provider(self):
         """Create the direct-API provider if it isn't running yet."""
@@ -634,6 +723,9 @@ class AgentBridge:
                     client = await self._ensure_sdk_client()
                     await client.query(prompt)
                     await self._stream_response_to_godot(client)
+                elif self._config["provider"] == "codex":
+                    provider = self._ensure_codex_provider()
+                    await self._stream_direct_turn(provider, prompt)
                 else:
                     provider = self._ensure_direct_provider()
                     await self._stream_direct_turn(provider, prompt)

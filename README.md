@@ -2,7 +2,7 @@
 
 **AI integration for the Godot editor.** Inspect scenes, modify nodes, run your game, capture screenshots, and chat with AI -- all without leaving the editor.
 
-Built around Claude Code, with bring-your-own-API-key support for the Anthropic API (including **Claude Fable 5**), OpenAI, **OpenRouter** (hundreds of models with one key), and any OpenAI-compatible endpoint (Ollama, LM Studio, ...).
+Built around Claude Code, with additional support for the **OpenAI Codex CLI** (drive GPT/Codex models with your ChatGPT sign-in) and bring-your-own-API-key access to the Anthropic API (including **Claude Fable 5**), OpenAI, **OpenRouter** (hundreds of models with one key), and any OpenAI-compatible endpoint (Ollama, LM Studio, ...).
 
 ![Claudot in the Godot editor](claudot_ui_examples/editor_screenshot.png)
 
@@ -87,6 +87,7 @@ Click **Settings** in the info bar to choose how the chat panel talks to an AI m
 | Provider | Auth | Capabilities |
 |---|---|---|
 | **Claude Code** (default) | Your Claude subscription login (`claude` CLI). An Anthropic API key may optionally be supplied and takes precedence. | Everything: file edits, bash, all 20 Godot MCP tools |
+| **Codex** | Your ChatGPT sign-in via the OpenAI Codex CLI — `npm install -g @openai/codex`, then `codex login` once. An OpenAI API key may optionally be supplied for API billing instead. | Everything: file edits, sandboxed shell commands, all Godot scene tools via MCP |
 | **Anthropic API** | API key from [console.anthropic.com](https://console.anthropic.com) | Chat + 16 Godot scene/docs tools (no file editing) |
 | **OpenAI API** | API key from [platform.openai.com](https://platform.openai.com) | Chat + 16 Godot scene/docs tools (no file editing) |
 | **OpenRouter** | API key from [openrouter.ai/keys](https://openrouter.ai/keys) — one key for hundreds of models (`vendor/model` IDs) | Chat + 16 Godot scene/docs tools (no file editing), with real per-message cost reporting |
@@ -94,7 +95,9 @@ Click **Settings** in the info bar to choose how the chat panel talks to an AI m
 
 Available Claude models include **Claude Fable 5** (Anthropic's most capable model), **Claude Opus 4.8** (recommended default), Opus 4.7/4.6, Sonnet 4.6, and Haiku 4.5. A quick model switcher lives directly in the info bar; the Settings dialog also accepts any custom model ID.
 
-The OpenRouter provider ships with a curated list of popular models (Claude Sonnet 5 / Opus 5, GPT-5.1, Gemini 3 Flash, DeepSeek V4, Kimi K3, GLM 5.2, Qwen3 Coder, ...) and a **Fetch all** button that pulls the full live catalog from openrouter.ai so you can filter and pick any model. If you previously used OpenRouter through the Custom provider, your key and model are migrated automatically.
+The OpenRouter provider ships with a curated list of popular models (Claude Sonnet 5 / Opus 5, GPT-5.6 Sol / Terra, Gemini 3 Flash, DeepSeek V4, Kimi K3, GLM 5.2, Qwen3 Coder, ...) and a **Fetch all** button that pulls the full live catalog from openrouter.ai so you can filter and pick any model. If you previously used OpenRouter through the Custom provider, your key and model are migrated automatically.
+
+GPT and Codex models are also available **without the Codex CLI** through the OpenRouter provider (`openai/gpt-5.6-sol`, `openai/gpt-5.6-terra`, ...) — handy if you'd rather use an OpenRouter key than a ChatGPT subscription. Note that OpenRouter access is chat + scene tools only (no file editing); the Codex provider is what unlocks file edits and shell commands.
 
 **API keys are stored in your Godot editor settings** — outside the project directory, so they can never be committed to version control.
 

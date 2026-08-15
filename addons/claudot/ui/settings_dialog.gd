@@ -9,6 +9,8 @@ extends AcceptDialog
 ## Providers:
 ##   claude-code  — Claude Agent SDK via Claude Code CLI (subscription OAuth login;
 ##                  Anthropic API key optional, used if provided)
+##   codex        — OpenAI Codex CLI app-server (ChatGPT subscription login via
+##                  [code]codex login[/code]; OpenAI API key optional, used if provided)
 ##   anthropic    — Anthropic Messages API directly (API key required)
 ##   openai       — OpenAI chat completions (API key required)
 ##   openrouter   — OpenRouter (openrouter.ai): one key, many models (API key required)
@@ -18,16 +20,19 @@ signal settings_changed(config: Dictionary)
 
 const ES_PROVIDER = "claudot/provider"
 const ES_MODEL_CLAUDE = "claudot/model_claude"
+const ES_MODEL_CODEX = "claudot/model_codex"
 const ES_MODEL_OPENAI = "claudot/model_openai"
 const ES_MODEL_CUSTOM = "claudot/model_custom"
 const ES_MODEL_OPENROUTER = "claudot/model_openrouter"
 const ES_KEY_ANTHROPIC = "claudot/api_key_anthropic"
+const ES_KEY_CODEX = "claudot/api_key_codex"
 const ES_KEY_OPENAI = "claudot/api_key_openai"
 const ES_KEY_CUSTOM = "claudot/api_key_custom"
 const ES_KEY_OPENROUTER = "claudot/api_key_openrouter"
 const ES_BASE_URL_CUSTOM = "claudot/base_url_custom"
 
 const DEFAULT_CLAUDE_MODEL = "claude-opus-4-8"
+const DEFAULT_CODEX_MODEL = "gpt-5.6-sol"
 const DEFAULT_OPENAI_MODEL = "gpt-5.1"
 const DEFAULT_OPENROUTER_MODEL = "anthropic/claude-sonnet-5"
 
@@ -35,6 +40,7 @@ const OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
 
 const PROVIDERS = [
 	{"id": "claude-code", "label": "Claude Code (subscription login)"},
+	{"id": "codex", "label": "Codex (ChatGPT subscription login)"},
 	{"id": "anthropic", "label": "Anthropic API (bring your own key)"},
 	{"id": "openai", "label": "OpenAI API (bring your own key)"},
 	{"id": "openrouter", "label": "OpenRouter (one key, many models)"},
@@ -52,6 +58,13 @@ const CLAUDE_MODELS = [
 	{"id": "claude-haiku-4-5", "label": "Claude Haiku 4.5  —  fastest"},
 ]
 
+const CODEX_MODELS = [
+	{"id": "gpt-5.6-sol", "label": "GPT-5.6 Sol  —  recommended"},
+	{"id": "gpt-5.6-terra", "label": "GPT-5.6 Terra  —  balanced"},
+	{"id": "gpt-5.6-luna", "label": "GPT-5.6 Luna  —  fast + affordable"},
+	{"id": "gpt-5.3-codex-spark", "label": "GPT-5.3 Codex Spark  —  near-instant (Pro only)"},
+]
+
 const OPENAI_MODELS = [
 	{"id": "gpt-5.1", "label": "GPT-5.1"},
 	{"id": "gpt-5", "label": "GPT-5"},
@@ -59,12 +72,13 @@ const OPENAI_MODELS = [
 	{"id": "o3", "label": "o3"},
 ]
 
-# Curated picks from OpenRouter's most-used models (July 2026). "Fetch all"
+# Curated picks from OpenRouter's most-used models (August 2026). "Fetch all"
 # extends the dropdown with the full live catalog from OPENROUTER_MODELS_URL.
 const OPENROUTER_MODELS = [
 	{"id": "anthropic/claude-sonnet-5", "label": "Claude Sonnet 5  —  recommended"},
 	{"id": "anthropic/claude-opus-5", "label": "Claude Opus 5"},
-	{"id": "openai/gpt-5.1", "label": "GPT-5.1"},
+	{"id": "openai/gpt-5.6-terra", "label": "GPT-5.6 Terra"},
+	{"id": "openai/gpt-5.6-sol", "label": "GPT-5.6 Sol"},
 	{"id": "google/gemini-3-flash-preview", "label": "Gemini 3 Flash"},
 	{"id": "deepseek/deepseek-v4-pro", "label": "DeepSeek V4 Pro"},
 	{"id": "deepseek/deepseek-v4-flash", "label": "DeepSeek V4 Flash  —  cheap + fast"},
@@ -78,6 +92,7 @@ const OPENROUTER_MODELS = [
 
 const PROVIDER_NOTES = {
 	"claude-code": "Uses your Claude Code login (run [code]claude[/code] once to sign in). Full capabilities: file edits, bash, all 20 Godot tools. API key optional — if set, it is used instead of the login.",
+	"codex": "Uses your ChatGPT sign-in via the Codex CLI (run [code]codex login[/code] once; install with [code]npm install -g @openai/codex[/code]). Full capabilities: file edits, shell commands (sandboxed to the project), and all Godot scene tools. API key optional — if set, API billing is used instead of your subscription.",
 	"anthropic": "Talks to the Anthropic API directly with your key from console.anthropic.com. Godot scene tools work; file editing is not available in this mode. Required for Claude Fable 5 once it moves to API-key-only access.",
 	"openai": "Talks to the OpenAI API with your key from platform.openai.com. Godot scene tools work; file editing is not available in this mode.",
 	"openrouter": "One API key for hundreds of models — get yours at openrouter.ai/keys. Model IDs use [code]vendor/model[/code] format; press Fetch all to browse the full live catalog. Godot scene tools work; file editing is not available in this mode.",
@@ -161,6 +176,8 @@ static func _migrate_custom_openrouter() -> void:
 
 static func get_model_for_provider(provider: String) -> String:
 	match provider:
+		"codex":
+			return _setting(ES_MODEL_CODEX, DEFAULT_CODEX_MODEL)
 		"openai":
 			return _setting(ES_MODEL_OPENAI, DEFAULT_OPENAI_MODEL)
 		"openrouter":
@@ -173,6 +190,8 @@ static func get_model_for_provider(provider: String) -> String:
 
 static func set_model_for_provider(provider: String, model: String) -> void:
 	match provider:
+		"codex":
+			_store(ES_MODEL_CODEX, model)
 		"openai":
 			_store(ES_MODEL_OPENAI, model)
 		"openrouter":
@@ -192,6 +211,8 @@ static func get_config() -> Dictionary:
 	match provider:
 		"claude-code", "anthropic":
 			api_key = _setting(ES_KEY_ANTHROPIC, "")
+		"codex":
+			api_key = _setting(ES_KEY_CODEX, "")
 		"openai":
 			api_key = _setting(ES_KEY_OPENAI, "")
 		"openrouter":
@@ -209,6 +230,8 @@ static func get_config() -> Dictionary:
 
 static func get_known_models(provider: String) -> Array:
 	match provider:
+		"codex":
+			return CODEX_MODELS
 		"openai":
 			return OPENAI_MODELS
 		"openrouter":
@@ -446,6 +469,9 @@ func _load_key_for_provider(provider: String) -> void:
 		"claude-code", "anthropic":
 			api_key_edit.text = _setting(ES_KEY_ANTHROPIC, "")
 			api_key_edit.placeholder_text = "sk-ant-...  (optional for Claude Code)" if provider == "claude-code" else "sk-ant-..."
+		"codex":
+			api_key_edit.text = _setting(ES_KEY_CODEX, "")
+			api_key_edit.placeholder_text = "sk-...  (optional — codex login is used if empty)"
 		"openai":
 			api_key_edit.text = _setting(ES_KEY_OPENAI, "")
 			api_key_edit.placeholder_text = "sk-..."
@@ -493,6 +519,8 @@ func _on_confirmed() -> void:
 	var model = _selected_model()
 	if model.is_empty():
 		match provider:
+			"codex":
+				model = DEFAULT_CODEX_MODEL
 			"openai":
 				model = DEFAULT_OPENAI_MODEL
 			"openrouter":
@@ -505,6 +533,8 @@ func _on_confirmed() -> void:
 	match provider:
 		"claude-code", "anthropic":
 			_store(ES_KEY_ANTHROPIC, api_key_edit.text.strip_edges())
+		"codex":
+			_store(ES_KEY_CODEX, api_key_edit.text.strip_edges())
 		"openai":
 			_store(ES_KEY_OPENAI, api_key_edit.text.strip_edges())
 		"openrouter":
