@@ -14,8 +14,9 @@ const TCPClient = preload("res://addons/claudot/network/tcp_client.gd")
 const ContextProvider = preload("res://addons/claudot/mcp/context_provider.gd")
 const SettingsDialogScript = preload("res://addons/claudot/ui/settings_dialog.gd")
 
-const CLAUDOT_VERSION = "v3.1-beta"
-const CLAUDOT_RELEASES_URL = "https://github.com/claudot-dev/claudot/releases"
+const CLAUDOT_RELEASES_URL = "https://github.com/Claudot-Code/claudot-pub/releases"
+const CLAUDOT_PLUGIN_CFG = "res://addons/claudot/plugin.cfg"
+const CLAUDOT_VERSION_FALLBACK = "Claudot"
 
 # Reference to TCP client (set by plugin before entering tree)
 var tcp_client: Node = null
@@ -68,6 +69,22 @@ func _ready() -> void:
 	call_deferred("_add_tab_bar_buttons")
 
 
+func _get_version_label() -> String:
+	## Read the installed version from plugin.cfg for the info bar button.
+	## A hardcoded constant drifts on every release: it read "v3.1-beta"
+	## on a v3.1.0-beta install. plugin.cfg is the file the editor itself uses,
+	## so the label cannot disagree with the Plugins list.
+	var cfg := ConfigFile.new()
+	if cfg.load(CLAUDOT_PLUGIN_CFG) != OK:
+		return CLAUDOT_VERSION_FALLBACK
+
+	var version := str(cfg.get_value("plugin", "version", ""))
+	if version.is_empty():
+		return CLAUDOT_VERSION_FALLBACK
+
+	return "v" + version
+
+
 func _build_ui() -> void:
 	## Build the entire UI tree programmatically with TabContainer architecture.
 	# Main container
@@ -90,7 +107,8 @@ func _build_ui() -> void:
 
 	var version_button = LinkButton.new()
 	version_button.name = "VersionButton"
-	version_button.text = CLAUDOT_VERSION
+	version_button.text = _get_version_label()
+	version_button.tooltip_text = "Open the Claudot releases page"
 	version_button.add_theme_font_size_override("font_size", 11)
 	version_button.pressed.connect(func(): OS.shell_open(CLAUDOT_RELEASES_URL))
 	info_bar.add_child(version_button)
