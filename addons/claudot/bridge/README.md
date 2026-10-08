@@ -15,10 +15,14 @@ The `openrouter` backend is the OpenAI-compatible provider with a fixed base
 URL, app attribution headers, and usage accounting — OpenRouter's per-request
 `usage.cost` is surfaced as the message cost in the chat panel.
 
-The `anthropic` backend fully supports **Claude Fable 5.1** and **Fable 5**
-(always-on thinking, refusal stop reason, 1M context, discounted cache reads on
-5.1) as well as Opus 5, Sonnet 5, Opus 4.8/4.7/4.6, Sonnet 4.6, and Haiku 4.5,
-with prompt caching enabled for cost efficiency.
+The `anthropic` backend fully supports **Claude Opus 5.5** (the default),
+**Sonnet 5.5**, and **Haiku 5.5** (adaptive thinking, 1M context, cache reads at
+5% of input; Haiku 5.5 switches to its higher rate tier for prompts over 100K
+tokens) and **Claude Fable 5.1** / **Fable 5** (always-on thinking, refusal stop
+reason, 1M context, discounted cache reads on 5.1), as well as Opus 5,
+Sonnet 5, Opus 4.8/4.7/4.6, Sonnet 4.6, and Haiku 4.5, with prompt caching
+enabled for cost efficiency. Opus 5.5 requests pin `output_config.effort` to
+`high` (the model's own default is `medium`).
 
 ## Architecture
 
@@ -72,7 +76,7 @@ never passed on the command line.
 
 Get an Anthropic key from https://console.anthropic.com/ — required for the
 `anthropic` backend, optional for `claude-code` (and will be required for
-Claude Fable 5 once it moves to API-key-only access).
+Claude Fable models once they move to API-key-only access).
 
 ## Usage
 
@@ -87,7 +91,7 @@ python addons/claudot/bridge/agent_bridge.py --port 7777 --log-level DEBUG
 Options:
 - `--host` - TCP server host (default: 127.0.0.1)
 - `--port` - TCP server port (default: 7777)
-- `--model` - Default Claude model (default: claude-opus-4-8; overridden at runtime by `chat/configure`)
+- `--model` - Default Claude model (default: claude-opus-5-5; overridden at runtime by `chat/configure`)
 - `--log-level` - Logging level (DEBUG, INFO, WARNING, ERROR)
 
 **Legacy MCP Bridge (tools only, no chat):**
@@ -178,7 +182,7 @@ addons/claudot/bridge/
   "method": "chat/configure",
   "params": {
     "provider": "anthropic",
-    "model": "claude-fable-5",
+    "model": "claude-opus-5-5",
     "api_key": "sk-ant-...",
     "base_url": ""
   }
@@ -193,7 +197,8 @@ Godot console tab.
 **Other bridge → Godot messages:**
 
 - `chat/refusal` `{category, message}` — the model's safety classifiers
-  declined the request (Claude Fable 5). The final `chat/response` still
+  declined the request (Fable models most often; Opus 5.5 and Sonnet 5.5 also
+  run safety classifiers). The final `chat/response` still
   follows to reset the UI state.
 - `chat/error` `{error}` — provider/backend failure (bad key, unreachable
   endpoint, rate limit). Clears the working indicator.

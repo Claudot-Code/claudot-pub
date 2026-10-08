@@ -68,13 +68,13 @@ async def main() -> int:
     # 2. Configure: direct Anthropic provider pointed at the fake server
     await send(writer, "chat/configure", {
         "provider": "anthropic",
-        "model": "claude-opus-4-8",
+        "model": "claude-opus-5-5",
         "api_key": "sk-test",
         "base_url": f"http://127.0.0.1:{FAKE_ANTHROPIC_PORT}",
     })
     msg, _ = await recv_until(reader, "chat/configured")
     ok &= expect(msg["params"]["provider"] == "anthropic", "configure acknowledged")
-    ok &= expect(msg["params"]["model"] == "claude-opus-4-8", "model acknowledged")
+    ok &= expect(msg["params"]["model"] == "claude-opus-5-5", "model acknowledged")
 
     # 3. Chat turn with editor context — should stream text, tool_use, then response
     await send(writer, "chat/send", {
@@ -102,7 +102,7 @@ async def main() -> int:
 
     # 5. Missing-key error path clears working state via chat/error
     await send(writer, "chat/configure", {
-        "provider": "anthropic", "model": "claude-opus-4-8", "api_key": "", "base_url": "",
+        "provider": "anthropic", "model": "claude-opus-5-5", "api_key": "", "base_url": "",
     })
     await recv_until(reader, "chat/configured")
     await send(writer, "chat/send", {"content": "hello"})

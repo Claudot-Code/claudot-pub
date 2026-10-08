@@ -68,7 +68,7 @@ from codex_provider import CodexProvider
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MODEL = "claude-opus-4-8"
+DEFAULT_MODEL = "claude-opus-5-5"
 
 # Shut down when no Godot editor has been connected for this long.
 #
@@ -1011,8 +1011,8 @@ class AgentBridge:
                         "category": category,
                         "message": (
                             f"The model's safety classifiers declined this request{cat_str}. "
-                            "Try rephrasing, or switch to Claude Opus 5 in Claudot Settings — "
-                            "it handles security- and biology-adjacent topics that Claude Fable models decline."
+                            "Try rephrasing, or switch to a different Claude model in Claudot Settings. "
+                            "Fable models have the strictest classifiers for security- and biology-adjacent topics."
                         )
                     }
                 })

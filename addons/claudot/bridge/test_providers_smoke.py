@@ -257,6 +257,21 @@ async def main() -> int:
     ok &= expect(types == ["refusal", "result"], f"refusal surfaced {types}")
     ok &= expect(events[0]["category"] == "cyber", "refusal category")
 
+    print("== AnthropicAPIProvider: 5.5 request shaping (effort / thinking) ==")
+    CAPTURED_BODIES.clear()
+    p = AnthropicAPIProvider("sk-test", "claude-opus-5-5", "system prompt here",
+                             base_url=f"http://127.0.0.1:{FAKE_ANTHROPIC_PORT}")
+    events = await collect(p, "What scene am I in?")
+    ok &= expect(events[-1]["type"] == "result", "opus-5-5 turn completes")
+    ok &= expect(CAPTURED_BODIES[0].get("output_config") == {"effort": "high"}, "opus-5-5 pins effort high")
+    ok &= expect(CAPTURED_BODIES[0].get("thinking") == {"type": "adaptive"}, "opus-5-5 sends adaptive thinking")
+    CAPTURED_BODIES.clear()
+    p = AnthropicAPIProvider("sk-test", "claude-sonnet-5-5", "system prompt here",
+                             base_url=f"http://127.0.0.1:{FAKE_ANTHROPIC_PORT}")
+    events = await collect(p, "What scene am I in?")
+    ok &= expect("output_config" not in CAPTURED_BODIES[0], "sonnet-5-5 sends no output_config")
+    ok &= expect(CAPTURED_BODIES[0].get("thinking") == {"type": "adaptive"}, "sonnet-5-5 sends adaptive thinking")
+
     print("== OpenAICompatProvider: tool loop ==")
     CAPTURED_BODIES.clear()
     p = OpenAICompatProvider("sk-test", "gpt-5.1", "system prompt here",
@@ -313,6 +328,46 @@ async def main() -> int:
                  "cache_read_rate defaults to 10% of input (fable-5)")
     ok &= expect(providers._cache_read_rate(providers._UNKNOWN_CLAUDE) is None,
                  "cache_read_rate is None when input rate unknown")
+
+    # 5.5 lineup
+    opus55 = providers.claude_model_info("claude-opus-5-5")
+    ok &= expect(opus55["in"] == 4.0 and opus55["out"] == 20.0, "opus-5-5 in/out pricing")
+    ok &= expect(opus55["context"] == 1_000_000, "opus-5-5 context 1M")
+    ok &= expect(opus55.get("cache_read") == 0.20, "opus-5-5 explicit cache_read rate (5%)")
+    ok &= expect(opus55["thinking"] == "adaptive", "opus-5-5 adaptive thinking")
+    ok &= expect(opus55.get("effort") == "high", "opus-5-5 effort pinned high")
+    sonnet55 = providers.claude_model_info("claude-sonnet-5-5")
+    ok &= expect(sonnet55["in"] == 2.0 and sonnet55["out"] == 10.0, "sonnet-5-5 in/out pricing")
+    ok &= expect(sonnet55["context"] == 1_000_000, "sonnet-5-5 context 1M")
+    ok &= expect(sonnet55.get("cache_read") == 0.10, "sonnet-5-5 explicit cache_read rate (5%)")
+    ok &= expect(sonnet55["thinking"] == "adaptive", "sonnet-5-5 adaptive thinking")
+    ok &= expect("effort" not in sonnet55, "sonnet-5-5 has no effort override")
+    haiku55 = providers.claude_model_info("claude-haiku-5-5")
+    ok &= expect(haiku55["in"] == 0.1 and haiku55["out"] == 0.5, "haiku-5-5 base in/out pricing")
+    ok &= expect(haiku55["context"] == 1_000_000, "haiku-5-5 context 1M")
+    ok &= expect(haiku55.get("cache_read") == 0.01, "haiku-5-5 explicit cache_read rate (10%)")
+    ok &= expect(haiku55["thinking"] == "adaptive", "haiku-5-5 adaptive thinking")
+    ok &= expect(haiku55.get("over_100k") == {"in": 0.5, "out": 2.5, "cache_read": 0.05},
+                 "haiku-5-5 over-100K tier rates")
+    ok &= expect(list(providers.CLAUDE_MODELS)[:5] == [
+        "claude-opus-5-5", "claude-fable-5-1", "claude-mythos-5-1", "claude-sonnet-5-5", "claude-haiku-5-5"],
+        "catalog reads newest-first")
+    # Prefix order: dated/suffixed 5.5 ids must not fall through to the 5 rows.
+    dated_opus = providers.claude_model_info("claude-opus-5-5-20260922")
+    ok &= expect(dated_opus["in"] == 4.0 and dated_opus.get("cache_read") == 0.20
+                 and dated_opus.get("effort") == "high", "dated opus-5-5 resolves to Opus 5.5 rates, not Opus 5")
+    dated_sonnet = providers.claude_model_info("claude-sonnet-5-5-x")
+    ok &= expect(dated_sonnet.get("cache_read") == 0.10, "suffixed sonnet-5-5 resolves to Sonnet 5.5")
+    dated_haiku = providers.claude_model_info("claude-haiku-5-5-20261001")
+    ok &= expect(dated_haiku.get("over_100k") is not None, "dated haiku-5-5 keeps tier data via claude-haiku-5")
+    ok &= expect(providers.claude_model_info("claude-opus-5-20260101")["in"] == 5.0, "opus-5 prefix still 5.0")
+    ok &= expect(providers.claude_model_info("claude-haiku-4-5-20251001")["in"] == 1.0, "haiku-4 prefix unchanged")
+    # Haiku 5.5 tiered rates
+    ok &= expect(providers._rates_for_request(haiku55, 50_000) == (0.1, 0.5, 0.01), "haiku-5-5 base tier under 100K")
+    ok &= expect(providers._rates_for_request(haiku55, 100_000) == (0.1, 0.5, 0.01), "haiku-5-5 base tier at exactly 100K")
+    ok &= expect(providers._rates_for_request(haiku55, 100_001) == (0.5, 2.5, 0.05), "haiku-5-5 over-100K tier")
+    ok &= expect(providers._rates_for_request(opus55, 500_000) == (4.0, 20.0, 0.20), "untiered model ignores prompt size")
+    ok &= expect(providers._cache_read_rate(haiku55) == 0.01, "cache_read_rate returns haiku-5-5 base tier")
 
     for s in servers:
         s.close()

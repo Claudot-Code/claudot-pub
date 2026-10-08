@@ -6,8 +6,10 @@ The default Claudot path talks to Claude through the Claude Agent SDK
 the bring-your-own-API-key alternatives:
 
 - AnthropicAPIProvider  — Anthropic Messages API over raw HTTP (httpx).
-  Supports Claude Fable 5 (always-on thinking, refusal stop reason, 1M
-  context) plus the Opus/Sonnet/Haiku 4.x families.
+  Supports the current lineup — Claude Opus 5.5, Sonnet 5.5, Haiku 5.5
+  (adaptive thinking, 1M context; Haiku 5.5 priced in two prompt-size tiers)
+  and Claude Fable/Mythos 5.1 (always-on thinking, refusal stop reason) —
+  plus the earlier Fable 5, Opus/Sonnet 5 and 4.x families.
 - OpenAICompatProvider  — any /chat/completions endpoint (OpenAI, Ollama,
   Gemini's compat endpoint, ...) via a configurable base URL.
 - OpenRouterProvider    — OpenRouter (openrouter.ai): OpenAI-compatible with a
@@ -19,7 +21,7 @@ agent_bridge.py forwards to the Godot chat panel:
 
     {"type": "text", "text": str}                       — completed assistant text block
     {"type": "tool_use", "name": str, "input": dict}    — tool call notification
-    {"type": "refusal", "category": str|None}           — safety classifier declined (Fable)
+    {"type": "refusal", "category": str|None}           — safety classifier declined
     {"type": "result", "content", "cost_usd", "duration_ms", "num_turns", "usage"}
 
 Providers raise ProviderError for user-facing failures (bad key, bad model,
@@ -45,15 +47,30 @@ ANTHROPIC_VERSION = "2023-06-01"
 MAX_TOOL_ITERATIONS = 25
 
 # Claude model catalog: context window, USD per MTok in/out, thinking config.
-# thinking: "omit"     — never send a thinking param (Fable 5/5.1: always-on; Haiku: unsupported)
-#           "adaptive" — send {"type": "adaptive"}
+# Rows are ordered newest-first: Opus 5.5, Fable/Mythos 5.1, Sonnet 5.5,
+# Haiku 5.5, then earlier releases.
+# thinking: "omit"     — never send a thinking param (Fable/Mythos: always-on; Haiku 4.5: unsupported)
+#           "adaptive" — send {"type": "adaptive"} (Opus 5.5 is always-on but
+#                        accepts adaptive; disabled/budget_tokens would 400)
 # cache_read: optional USD per MTok for cache-read input tokens. When absent it
 #   defaults to 10% of the model's input rate (Anthropic's standard cache-read
-#   discount). Fable/Mythos 5.1 price cache reads at 2.5% of input, so they set
-#   it explicitly. See _cache_read_rate().
+#   discount). The 5.5 models price cache reads at 5% of input and Fable/Mythos
+#   5.1 at 2.5%, so they set it explicitly. See _cache_read_rate().
+# over_100k: optional {"in", "out", "cache_read"} rates applied to a request
+#   whose prompt (input + cache read + cache write tokens) exceeds 100,000
+#   tokens. Haiku 5.5 is tiered this way. See _rates_for_request().
+# effort: optional output_config.effort sent with every request. Opus 5.5
+#   defaults to "medium"; Claudot pins it to "high" to match the behaviour of
+#   the Opus 4.8 default it replaces.
+_HAIKU_5_5_OVER_100K = {"in": 0.5, "out": 2.5, "cache_read": 0.05}
 CLAUDE_MODELS = {
+    "claude-opus-5-5":   {"context": 1_000_000, "in": 4.0,  "out": 20.0, "thinking": "adaptive", "cache_read": 0.20,
+                          "effort": "high"},
     "claude-fable-5-1":  {"context": 1_000_000, "in": 10.0, "out": 50.0, "thinking": "omit", "cache_read": 0.25},
     "claude-mythos-5-1": {"context": 1_000_000, "in": 10.0, "out": 50.0, "thinking": "omit", "cache_read": 0.25},
+    "claude-sonnet-5-5": {"context": 1_000_000, "in": 2.0,  "out": 10.0, "thinking": "adaptive", "cache_read": 0.10},
+    "claude-haiku-5-5":  {"context": 1_000_000, "in": 0.1,  "out": 0.5,  "thinking": "adaptive", "cache_read": 0.01,
+                          "over_100k": _HAIKU_5_5_OVER_100K},
     "claude-fable-5":   {"context": 1_000_000, "in": 10.0, "out": 50.0, "thinking": "omit"},
     "claude-mythos-5":  {"context": 1_000_000, "in": 10.0, "out": 50.0, "thinking": "omit"},
     "claude-opus-5":    {"context": 1_000_000, "in": 5.0,  "out": 25.0, "thinking": "adaptive"},
@@ -67,17 +84,26 @@ CLAUDE_MODELS = {
 
 # Prefix fallbacks for model IDs not in the catalog (future releases, dated IDs).
 # Ordered — first matching prefix wins — so the most specific variants must come
-# first (e.g. "claude-fable-5-1" ahead of "claude-fable" so a dated/suffixed
-# 5.1 id like "claude-fable-5-1-20260901" keeps its 2.5% cache-read rate).
+# first: "claude-fable-5-1" ahead of "claude-fable" so a dated/suffixed 5.1 id
+# like "claude-fable-5-1-20260901" keeps its 2.5% cache-read rate, and
+# "claude-opus-5-5" / "claude-sonnet-5-5" ahead of "claude-opus-5" /
+# "claude-sonnet-5" so e.g. "claude-opus-5-5-20260922" gets 5.5 pricing (and
+# the Opus 5.5 effort pin) rather than Opus 5 pricing. "claude-haiku-5" (5.5
+# tiered pricing) must precede "claude-haiku-4".
 CLAUDE_PREFIX_DEFAULTS = [
+    ("claude-opus-5-5", {"context": 1_000_000, "in": 4.0,  "out": 20.0, "thinking": "adaptive", "cache_read": 0.20,
+                         "effort": "high"}),
     ("claude-fable-5-1", {"context": 1_000_000, "in": 10.0, "out": 50.0, "thinking": "omit", "cache_read": 0.25}),
     ("claude-mythos-5-1", {"context": 1_000_000, "in": 10.0, "out": 50.0, "thinking": "omit", "cache_read": 0.25}),
+    ("claude-sonnet-5-5", {"context": 1_000_000, "in": 2.0, "out": 10.0, "thinking": "adaptive", "cache_read": 0.10}),
     ("claude-fable",    {"context": 1_000_000, "in": 10.0, "out": 50.0, "thinking": "omit"}),
     ("claude-mythos",   {"context": 1_000_000, "in": 10.0, "out": 50.0, "thinking": "omit"}),
     ("claude-opus-5",   {"context": 1_000_000, "in": 5.0,  "out": 25.0, "thinking": "adaptive"}),
     ("claude-opus-4",   {"context": 1_000_000, "in": 5.0,  "out": 25.0, "thinking": "adaptive"}),
     ("claude-sonnet-5", {"context": 1_000_000, "in": 2.0,  "out": 10.0, "thinking": "adaptive"}),
     ("claude-sonnet-4", {"context": 1_000_000, "in": 3.0,  "out": 15.0, "thinking": "adaptive"}),
+    ("claude-haiku-5",  {"context": 1_000_000, "in": 0.1,  "out": 0.5,  "thinking": "adaptive", "cache_read": 0.01,
+                         "over_100k": _HAIKU_5_5_OVER_100K}),
     ("claude-haiku-4",  {"context": 200_000,  "in": 1.0,  "out": 5.0,  "thinking": "omit"}),
 ]
 _UNKNOWN_CLAUDE = {"context": 200_000, "in": None, "out": None, "thinking": "omit"}
@@ -104,6 +130,24 @@ def _cache_read_rate(info: dict) -> Optional[float]:
     if "cache_read" in info:
         return info["cache_read"]
     return info["in"] * 0.1
+
+
+# Prompt size (input + cache read + cache write tokens) above which a model's
+# "over_100k" rates apply.
+LONG_PROMPT_THRESHOLD = 100_000
+
+
+def _rates_for_request(info: dict, prompt_tokens: int) -> tuple:
+    """(input, output, cache_read) USD per MTok for one request.
+
+    Uses the model's "over_100k" tier when present and the request's prompt
+    exceeds LONG_PROMPT_THRESHOLD tokens, otherwise the base rates. Rates are
+    None when the model's input rate is unknown.
+    """
+    tier = info.get("over_100k")
+    if tier and prompt_tokens > LONG_PROMPT_THRESHOLD:
+        return tier["in"], tier["out"], tier["cache_read"]
+    return info.get("in"), info.get("out"), _cache_read_rate(info)
 
 
 def context_window_for_model(model_id: str) -> int:
@@ -186,8 +230,9 @@ class AnthropicAPIProvider(DirectChatProvider):
     Anthropic Messages API over raw HTTP, with streaming and a Godot tool loop.
 
     Model-aware request shaping:
-    - Fable 5 / Mythos 5: no thinking param (always-on), refusal stop reason handled
-    - Opus 4.6+/Sonnet 4.6: adaptive thinking
+    - Fable / Mythos 5.x: no thinking param (always-on), refusal stop reason handled
+    - Opus/Sonnet/Haiku 5.5, Opus/Sonnet 5, Opus 4.6+/Sonnet 4.6: adaptive thinking
+    - Opus 5.5: output_config.effort pinned via the catalog "effort" key
     - thinking/tool_use/text blocks are replayed verbatim in history (required
       for tool loops, and strictly required on Fable 5)
     """
@@ -222,6 +267,8 @@ class AnthropicAPIProvider(DirectChatProvider):
         }
         if info["thinking"] == "adaptive":
             body["thinking"] = {"type": "adaptive"}
+        if info.get("effort"):
+            body["output_config"] = {"effort": info["effort"]}
         return body
 
     async def run_turn(self, prompt: str) -> AsyncIterator[dict]:
@@ -339,12 +386,13 @@ class AnthropicAPIProvider(DirectChatProvider):
             final_output_tokens += usage_out
             last_ctx_tokens = usage_in + cache_read + cache_write + usage_out
             if cost_known:
-                cache_read_rate = _cache_read_rate(info)
+                in_rate, out_rate, cache_read_rate = _rates_for_request(
+                    info, usage_in + cache_read + cache_write)
                 total_cost += (
-                    usage_in * info["in"]
+                    usage_in * in_rate
                     + cache_read * cache_read_rate
-                    + cache_write * info["in"] * 1.25
-                    + usage_out * info["out"]
+                    + cache_write * in_rate * 1.25
+                    + usage_out * out_rate
                 ) / 1_000_000
 
             if stop_reason == "refusal":

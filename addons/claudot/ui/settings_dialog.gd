@@ -31,10 +31,10 @@ const ES_KEY_CUSTOM = "claudot/api_key_custom"
 const ES_KEY_OPENROUTER = "claudot/api_key_openrouter"
 const ES_BASE_URL_CUSTOM = "claudot/base_url_custom"
 
-const DEFAULT_CLAUDE_MODEL = "claude-opus-4-8"
-const DEFAULT_CODEX_MODEL = "gpt-5.6-sol"
-const DEFAULT_OPENAI_MODEL = "gpt-5.1"
-const DEFAULT_OPENROUTER_MODEL = "anthropic/claude-sonnet-5"
+const DEFAULT_CLAUDE_MODEL = "claude-opus-5-5"
+const DEFAULT_CODEX_MODEL = "gpt-6.1-sol"
+const DEFAULT_OPENAI_MODEL = "gpt-6.1-sol"
+const DEFAULT_OPENROUTER_MODEL = "anthropic/claude-sonnet-5.5"
 
 const OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
 
@@ -48,57 +48,68 @@ const PROVIDERS = [
 ]
 
 const CLAUDE_MODELS = [
-	{"id": "claude-opus-4-8", "label": "Claude Opus 4.8  —  recommended"},
+	{"id": "claude-opus-5-5", "label": "Claude Opus 5.5  —  recommended"},
 	{"id": "claude-fable-5-1", "label": "Claude Fable 5.1  —  most capable"},
-	{"id": "claude-opus-5", "label": "Claude Opus 5  —  newest Opus"},
+	{"id": "claude-sonnet-5-5", "label": "Claude Sonnet 5.5  —  fast + smart"},
+	{"id": "claude-haiku-5-5", "label": "Claude Haiku 5.5  —  fastest + cheapest"},
+	{"id": "claude-opus-5", "label": "Claude Opus 5"},
+	{"id": "claude-opus-4-8", "label": "Claude Opus 4.8"},
 	{"id": "claude-fable-5", "label": "Claude Fable 5"},
-	{"id": "claude-sonnet-5", "label": "Claude Sonnet 5  —  fast + smart"},
+	{"id": "claude-sonnet-5", "label": "Claude Sonnet 5"},
 	{"id": "claude-opus-4-7", "label": "Claude Opus 4.7"},
 	{"id": "claude-opus-4-6", "label": "Claude Opus 4.6"},
 	{"id": "claude-sonnet-4-6", "label": "Claude Sonnet 4.6"},
-	{"id": "claude-haiku-4-5", "label": "Claude Haiku 4.5  —  fastest"},
+	{"id": "claude-haiku-4-5", "label": "Claude Haiku 4.5"},
 ]
 
 const CODEX_MODELS = [
 	{"id": "gpt-6-astra", "label": "GPT-6 Astra  —  most capable"},
-	{"id": "gpt-5.6-sol", "label": "GPT-5.6 Sol  —  recommended"},
+	{"id": "gpt-6.1-sol", "label": "GPT-6.1 Sol  —  recommended"},
+	{"id": "gpt-6-luna", "label": "GPT-6 Luna  —  fast + affordable"},
+	{"id": "gpt-5.6-sol", "label": "GPT-5.6 Sol"},
 	{"id": "gpt-5.6-terra", "label": "GPT-5.6 Terra  —  balanced"},
-	{"id": "gpt-5.6-luna", "label": "GPT-5.6 Luna  —  fast + affordable"},
-	{"id": "gpt-5.3-codex-spark", "label": "GPT-5.3 Codex Spark  —  near-instant (Pro only)"},
+	{"id": "gpt-5.6-luna", "label": "GPT-5.6 Luna"},
 ]
 
 const OPENAI_MODELS = [
 	{"id": "gpt-6-astra", "label": "GPT-6 Astra"},
+	{"id": "gpt-6.1-sol", "label": "GPT-6.1 Sol"},
+	{"id": "gpt-6-luna", "label": "GPT-6 Luna"},
 	{"id": "gpt-5.1", "label": "GPT-5.1"},
 	{"id": "gpt-5", "label": "GPT-5"},
 	{"id": "gpt-4.1", "label": "GPT-4.1"},
 	{"id": "o3", "label": "o3"},
 ]
 
-# Curated picks from OpenRouter's most-used models (August 2026). "Fetch all"
+# Curated picks from OpenRouter's most-used models (October 2026). "Fetch all"
 # extends the dropdown with the full live catalog from OPENROUTER_MODELS_URL.
 const OPENROUTER_MODELS = [
-	{"id": "anthropic/claude-sonnet-5", "label": "Claude Sonnet 5  —  recommended"},
-	{"id": "anthropic/claude-fable-5-1", "label": "Claude Fable 5.1"},
+	{"id": "anthropic/claude-sonnet-5.5", "label": "Claude Sonnet 5.5  —  recommended"},
+	{"id": "anthropic/claude-opus-5.5", "label": "Claude Opus 5.5"},
+	{"id": "anthropic/claude-haiku-5.5", "label": "Claude Haiku 5.5  —  cheap + fast"},
+	{"id": "anthropic/claude-fable-5.1", "label": "Claude Fable 5.1"},
 	{"id": "anthropic/claude-opus-5", "label": "Claude Opus 5"},
 	{"id": "openai/gpt-6-astra", "label": "GPT-6 Astra"},
-	{"id": "openai/gpt-5.6-terra", "label": "GPT-5.6 Terra"},
+	{"id": "openai/gpt-6.1-sol", "label": "GPT-6.1 Sol"},
+	{"id": "openai/gpt-6-luna", "label": "GPT-6 Luna"},
 	{"id": "openai/gpt-5.6-sol", "label": "GPT-5.6 Sol"},
-	{"id": "google/gemini-3-flash-preview", "label": "Gemini 3 Flash"},
+	{"id": "google/gemini-3.8-flash", "label": "Gemini 3.8 Flash"},
+	{"id": "mistralai/mistral-large-4-0", "label": "Mistral Large 4"},
+	{"id": "x-ai/grok-4.7", "label": "Grok 4.7"},
 	{"id": "deepseek/deepseek-v4-pro", "label": "DeepSeek V4 Pro"},
-	{"id": "deepseek/deepseek-v4-flash", "label": "DeepSeek V4 Flash  —  cheap + fast"},
+	{"id": "deepseek/deepseek-v4.1-flash", "label": "DeepSeek V4.1 Flash  —  cheap + fast"},
 	{"id": "moonshotai/kimi-k3", "label": "Kimi K3"},
-	{"id": "z-ai/glm-5.2", "label": "GLM 5.2"},
+	{"id": "z-ai/glm-5.3", "label": "GLM 5.3"},
 	{"id": "minimax/minimax-m3", "label": "MiniMax M3"},
 	{"id": "qwen/qwen3-coder", "label": "Qwen3 Coder"},
-	{"id": "xiaomi/mimo-v2.5", "label": "MiMo V2.5"},
+	{"id": "xiaomi/mimo-v2.6-pro", "label": "MiMo V2.6 Pro"},
 	{"id": "nvidia/nemotron-3-ultra-550b-a55b", "label": "Nemotron 3 Ultra"},
 ]
 
 const PROVIDER_NOTES = {
 	"claude-code": "Uses your Claude Code login (run [code]claude[/code] once to sign in). Full capabilities: file edits, bash, all 20 Godot tools. API key optional — if set, it is used instead of the login.",
 	"codex": "Uses your ChatGPT sign-in via the Codex CLI (run [code]codex login[/code] once; install with [code]npm install -g @openai/codex[/code]). Full capabilities: file edits, shell commands (sandboxed to the project), and all Godot scene tools. API key optional — if set, API billing is used instead of your subscription.",
-	"anthropic": "Talks to the Anthropic API directly with your key from console.anthropic.com. Godot scene tools work; file editing is not available in this mode. Required for Claude Fable 5 once it moves to API-key-only access.",
+	"anthropic": "Talks to the Anthropic API directly with your key from console.anthropic.com. Godot scene tools work; file editing is not available in this mode. Newest models (Opus 5.5, Sonnet 5.5, Haiku 5.5) are available here immediately; the Claude Code provider needs an up-to-date CLI for them.",
 	"openai": "Talks to the OpenAI API with your key from platform.openai.com. Godot scene tools work; file editing is not available in this mode.",
 	"openrouter": "One API key for hundreds of models — get yours at openrouter.ai/keys. Model IDs use [code]vendor/model[/code] format; press Fetch all to browse the full live catalog. Godot scene tools work; file editing is not available in this mode.",
 	"custom": "Any OpenAI-compatible endpoint. Example: Ollama [code]http://localhost:11434/v1[/code]. Godot scene tools work; file editing is not available in this mode.",
@@ -308,7 +319,7 @@ func _build_ui() -> void:
 	custom_model_label.custom_minimum_size.x = 110
 	_custom_model_row.add_child(custom_model_label)
 	custom_model_edit = LineEdit.new()
-	custom_model_edit.placeholder_text = "e.g. claude-opus-4-8, llama3.3:70b, anthropic/claude-opus-4.8"
+	custom_model_edit.placeholder_text = "e.g. claude-opus-5-5, llama3.3:70b, anthropic/claude-opus-5.5"
 	custom_model_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_custom_model_row.add_child(custom_model_edit)
 
