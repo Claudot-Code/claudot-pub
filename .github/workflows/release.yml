@@ -48,13 +48,14 @@ jobs:
       - name: Create or update GitHub release
         run: |
           NAME="claudot-${TAG}.zip"
-          PRERELEASE_FLAG=""
-          case "$TAG" in *-*) PRERELEASE_FLAG="--prerelease" ;; esac
+          # Every Claudot release so far is a "-beta" and is published as a full
+          # release on purpose: the in-editor updater asks GitHub for the
+          # "latest" release, and that endpoint hides prereleases.
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release upload "$TAG" "$NAME" "$NAME.sha256" --repo "$GITHUB_REPOSITORY" --clobber
           else
             gh release create "$TAG" "$NAME" "$NAME.sha256" \
               --repo "$GITHUB_REPOSITORY" \
               --title "Claudot ${TAG}" \
-              --generate-notes $PRERELEASE_FLAG
+              --generate-notes --latest
           fi
