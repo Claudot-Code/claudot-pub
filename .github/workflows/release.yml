@@ -1,0 +1,60 @@
+name: Release
+
+# Cut a release by pushing a tag that matches plugin.cfg exactly, e.g.
+#   git tag v3.2.0-beta && git push origin v3.2.0-beta
+# The workflow builds claudot-<tag>.zip (addons/claudot at the zip root, which
+# is the layout the in-editor updater expects), a .sha256 checksum file, and
+# creates or updates the GitHub release with both attached.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ github.ref_name }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify tag matches plugin.cfg version
+        run: |
+          CFG=$(sed -nE 's/^version="(.*)"$/\1/p' addons/claudot/plugin.cfg)
+          TAG_NORM=$(echo "$TAG" | sed -E 's/^[vV]//' | tr '[:upper:]' '[:lower:]')
+          CFG_NORM=$(echo "$CFG" | tr '[:upper:]' '[:lower:]')
+          echo "tag=$TAG plugin.cfg=$CFG"
+          if [ "$TAG_NORM" != "$CFG_NORM" ]; then
+            echo "::error::Tag '$TAG' does not match plugin.cfg version '$CFG'. Bump plugin.cfg first."
+            exit 1
+          fi
+
+      - name: Build release zip
+        run: |
+          NAME="claudot-${TAG}.zip"
+          find addons -name '__pycache__' -type d -prune -exec rm -rf {} +
+          find addons -name '*.pyc' -delete
+          rm -f addons/claudot/bridge/.env
+          zip -r -X "$NAME" addons
+          sha256sum "$NAME" > "$NAME.sha256"
+          unzip -l "$NAME" | tail -1
+          cat "$NAME.sha256"
+
+      - name: Create or update GitHub release
+        run: |
+          NAME="claudot-${TAG}.zip"
+          PRERELEASE_FLAG=""
+          case "$TAG" in *-*) PRERELEASE_FLAG="--prerelease" ;; esac
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$NAME" "$NAME.sha256" --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$TAG" "$NAME" "$NAME.sha256" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "Claudot ${TAG}" \
+              --generate-notes $PRERELEASE_FLAG
+          fi

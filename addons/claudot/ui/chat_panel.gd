@@ -13,6 +13,8 @@ const ConversationStorage = preload("res://addons/claudot/ui/conversation_storag
 const TCPClient = preload("res://addons/claudot/network/tcp_client.gd")
 const ContextProvider = preload("res://addons/claudot/mcp/context_provider.gd")
 const SettingsDialogScript = preload("res://addons/claudot/ui/settings_dialog.gd")
+const UpdateDialogScript = preload("res://addons/claudot/ui/update_dialog.gd")
+const UpdateInstallerScript = preload("res://addons/claudot/network/update_installer.gd")
 
 const CLAUDOT_RELEASES_URL = "https://github.com/Claudot-Code/claudot-pub/releases"
 const CLAUDOT_PLUGIN_CFG = "res://addons/claudot/plugin.cfg"
@@ -42,6 +44,14 @@ var clear_tab_button: Button  # Anchor-overlaid in tab bar
 var model_option: OptionButton
 var settings_button: Button
 var settings_dialog: AcceptDialog
+
+# Update checking / in-editor update
+var version_button: LinkButton
+var update_checker: Node = null  # Set via setup_update_checker
+var update_dialog: ConfirmationDialog = null  # Created lazily
+var update_installer: Node = null  # Created lazily
+var _pending_update: Dictionary = {}  # Latest release info when newer than installed
+var _manual_update_check: bool = false  # True while a user-initiated check is in flight
 var _model_option_ids: Array = []  # model_option index → model ID
 var _syncing_model_option: bool = false
 
@@ -105,12 +115,12 @@ func _build_ui() -> void:
 	info_bar.name = "InfoBar"
 	vbox.add_child(info_bar)
 
-	var version_button = LinkButton.new()
+	version_button = LinkButton.new()
 	version_button.name = "VersionButton"
 	version_button.text = _get_version_label()
 	version_button.tooltip_text = "Open the Claudot releases page"
 	version_button.add_theme_font_size_override("font_size", 11)
-	version_button.pressed.connect(func(): OS.shell_open(CLAUDOT_RELEASES_URL))
+	version_button.pressed.connect(_on_version_button_pressed)
 	info_bar.add_child(version_button)
 
 	var vsep_version = VSeparator.new()
@@ -184,6 +194,8 @@ func _build_ui() -> void:
 	settings_dialog = SettingsDialogScript.new()
 	add_child(settings_dialog)
 	settings_dialog.settings_changed.connect(_on_settings_changed)
+	settings_dialog.update_check_requested.connect(_on_manual_update_check)
+	settings_dialog.restore_requested.connect(_on_restore_requested)
 
 	_sync_model_selector()
 
@@ -251,6 +263,119 @@ func setup_tcp_signals(client: Node) -> void:
 func setup_bridge_launcher(launcher: Node) -> void:
 	## Called by plugin to give chat_panel access to the bridge launcher.
 	bridge_launcher = launcher
+
+
+## ---------------------------------------------------------------------------
+## Updates: GitHub release check, info-bar badge, in-editor install
+## ---------------------------------------------------------------------------
+
+func setup_update_checker(checker: Node) -> void:
+	## Called by plugin to wire the GitHub release checker to the info bar.
+	update_checker = checker
+	update_checker.update_available.connect(_on_update_available)
+	update_checker.up_to_date.connect(_on_update_up_to_date)
+	update_checker.check_failed.connect(_on_update_check_failed)
+
+
+func _ensure_update_dialog() -> void:
+	## Lazily create the installer and dialog the first time they are needed.
+	if update_dialog:
+		return
+	update_installer = UpdateInstallerScript.new()
+	update_installer.name = "ClaudotUpdateInstaller"
+	add_child(update_installer)
+	update_dialog = UpdateDialogScript.new()
+	update_dialog.name = "ClaudotUpdateDialog"
+	add_child(update_dialog)
+	update_dialog.setup(update_installer, tcp_client, bridge_launcher)
+	update_dialog.skip_requested.connect(_on_update_skipped)
+
+
+func _installed_version() -> String:
+	if update_checker:
+		return update_checker.get_installed_version()
+	return _get_version_label().trim_prefix("v")
+
+
+func _on_version_button_pressed() -> void:
+	## No pending update: open the releases page. Otherwise open the update dialog.
+	if _pending_update.is_empty():
+		OS.shell_open(CLAUDOT_RELEASES_URL)
+		return
+	_ensure_update_dialog()
+	update_dialog.open_for(_pending_update, _installed_version())
+
+
+func _on_manual_update_check() -> void:
+	## "Check now" from the settings dialog: bypass the daily throttle and the skip list.
+	if not update_checker:
+		return
+	_manual_update_check = true
+	update_checker.check(true)
+
+
+func _on_update_available(info: Dictionary) -> void:
+	var manual := _manual_update_check
+	_manual_update_check = false
+	if not manual and update_checker.is_skipped(str(info.get("tag", ""))):
+		return
+	_pending_update = info
+	_show_update_badge(info)
+	if manual:
+		_ensure_update_dialog()
+		update_dialog.open_for(info, _installed_version())
+
+
+func _on_update_up_to_date(installed: String, latest: String) -> void:
+	if not _manual_update_check:
+		return
+	_manual_update_check = false
+	_notify("Claudot is up to date (installed v%s, latest release v%s)." % [installed, latest])
+
+
+func _on_update_check_failed(reason: String) -> void:
+	if not _manual_update_check:
+		return
+	_manual_update_check = false
+	_notify("Update check failed: %s" % reason)
+
+
+func _on_update_skipped(tag: String) -> void:
+	if update_checker:
+		update_checker.skip_tag(tag)
+	_pending_update = {}
+	_clear_update_badge()
+
+
+func _on_restore_requested() -> void:
+	_ensure_update_dialog()
+	update_dialog.open_restore(update_installer, tcp_client, bridge_launcher, UpdateInstallerScript.get_backup_version())
+
+
+func _show_update_badge(info: Dictionary) -> void:
+	version_button.text = "%s · v%s available" % [_get_version_label(), info.get("version", "")]
+	version_button.add_theme_color_override("font_color", get_theme_color("accent_color", "Editor"))
+	var notes: String = str(info.get("body", "")).strip_edges()
+	if notes.length() > 600:
+		notes = notes.substr(0, 600) + "…"
+	version_button.tooltip_text = "Claudot %s is available. Click to update.\n\n%s" % [info.get("tag", ""), notes]
+
+
+func _clear_update_badge() -> void:
+	version_button.text = _get_version_label()
+	version_button.remove_theme_color_override("font_color")
+	version_button.tooltip_text = "Open the Claudot releases page"
+
+
+func _notify(text: String) -> void:
+	## Small one-off message box for manual update-check results.
+	var dlg := AcceptDialog.new()
+	dlg.title = "Claudot"
+	dlg.dialog_text = text
+	add_child(dlg)
+	dlg.confirmed.connect(dlg.queue_free)
+	dlg.canceled.connect(dlg.queue_free)
+	dlg.popup_centered()
 
 
 func setup_context(editor_plugin: EditorPlugin) -> void:

@@ -17,6 +17,11 @@ extends AcceptDialog
 ##   custom       — any OpenAI-compatible endpoint (base URL required, key optional)
 
 signal settings_changed(config: Dictionary)
+signal update_check_requested
+signal restore_requested
+
+const UpdateCheckerScript = preload("res://addons/claudot/network/update_checker.gd")
+const UpdateInstallerScript = preload("res://addons/claudot/network/update_installer.gd")
 
 const ES_PROVIDER = "claudot/provider"
 const ES_MODEL_CLAUDE = "claudot/model_claude"
@@ -129,6 +134,9 @@ var _api_key_row: HBoxContainer
 var _base_url_row: HBoxContainer
 var _filter_row: HBoxContainer
 var _http: HTTPRequest
+
+var auto_update_check: CheckBox
+var restore_button: Button
 
 # Dropdown item index → model ID ("" = the "Custom model…" sentinel)
 var _model_ids: Array = []
@@ -368,6 +376,35 @@ func _build_ui() -> void:
 	storage_label.modulate = Color(1, 1, 1, 0.6)
 	vbox.add_child(storage_label)
 
+	# Updates section
+	vbox.add_child(HSeparator.new())
+	var updates_row = HBoxContainer.new()
+	vbox.add_child(updates_row)
+	var updates_label = Label.new()
+	updates_label.text = "Updates"
+	updates_label.custom_minimum_size.x = 110
+	updates_row.add_child(updates_label)
+	auto_update_check = CheckBox.new()
+	auto_update_check.text = "Check for updates daily"
+	auto_update_check.tooltip_text = "Ask GitHub once a day whether a newer Claudot release exists"
+	auto_update_check.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	auto_update_check.toggled.connect(func(on: bool): UpdateCheckerScript.set_auto_check_enabled(on))
+	updates_row.add_child(auto_update_check)
+	var check_now_button = Button.new()
+	check_now_button.text = "Check now"
+	check_now_button.tooltip_text = "Look for a newer Claudot release on GitHub"
+	check_now_button.pressed.connect(func():
+		hide()
+		update_check_requested.emit())
+	updates_row.add_child(check_now_button)
+	restore_button = Button.new()
+	restore_button.text = "Restore previous version"
+	restore_button.tooltip_text = "Reinstall the version backed up by the last in-editor update"
+	restore_button.pressed.connect(func():
+		hide()
+		restore_requested.emit())
+	updates_row.add_child(restore_button)
+
 	_http = HTTPRequest.new()
 	_http.timeout = 15.0
 	_http.request_completed.connect(_on_models_fetch_completed)
@@ -521,6 +558,11 @@ func _load_from_settings() -> void:
 	_populate_models(provider, get_model_for_provider(provider))
 	_load_key_for_provider(provider)
 	_update_visibility()
+	auto_update_check.set_pressed_no_signal(UpdateCheckerScript.is_auto_check_enabled())
+	var backup_version: String = UpdateInstallerScript.get_backup_version()
+	restore_button.visible = not backup_version.is_empty()
+	if restore_button.visible:
+		restore_button.text = "Restore v%s" % backup_version
 
 
 func _selected_model() -> String:

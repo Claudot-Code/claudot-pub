@@ -220,6 +220,27 @@ All scene modifications support **Ctrl+Z undo**.
 
 ---
 
+## Updating
+
+Claudot checks GitHub once a day for a newer release (toggle this in **Settings → Updates**, or press **Check now** there). When one exists, the version label in the chat panel's info bar turns into a badge such as `v3.1.0-beta · v3.2.0-beta available`. Click it to open the update dialog, which shows the release notes and offers **Update and restart**.
+
+The in-editor update does exactly what the manual procedure does:
+
+1. Downloads the release zip from GitHub and verifies its size and SHA-256 checksum.
+2. Extracts it to a staging folder and checks that it contains `addons/claudot/plugin.cfg` with the expected version.
+3. Stops the bridge process.
+4. Backs up the current `addons/claudot/` to the Godot user data folder (`user://claudot_update/backup/`).
+5. Deletes the old `addons/claudot/` contents and copies the new ones in. `bridge/.env` is preserved if you created one.
+6. Restarts the editor.
+
+If your project is under version control you will see the addon files change, the same as after a manual update.
+
+**Rolling back:** open **Settings → Updates** and press **Restore v\<previous\>**. The backup from the last in-editor update is reinstalled and the editor restarts. If the plugin fails to load after an update, copy `user://claudot_update/backup/` back over `addons/claudot/` by hand (on Windows `user://` is `%APPDATA%\Godot\app_userdata\<project name>\`).
+
+**Updating by hand:** close Godot, delete `addons/claudot/` entirely, extract the new release zip into the project root, and reopen the project. Do not merge a new version over a live install.
+
+Users on v3.1-BETA or older have no update checker, so that one upgrade is manual.
+
 ## Uninstalling
 
 1. Disable the plugin: **Project > Project Settings > Plugins > uncheck Claudot**

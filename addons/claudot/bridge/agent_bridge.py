@@ -601,6 +601,12 @@ class AgentBridge:
                     await self._client.interrupt()
                 if self._direct_provider:
                     self._direct_provider.interrupt()
+            elif method == "chat/shutdown":
+                # Sent by the in-editor updater before it replaces the addon
+                # files. Same exit path as the idle timeout; the editor
+                # disconnects right after, which lets the server close.
+                logger.info("Shutdown requested by editor (addon update)")
+                self._shutdown_event.set()
             else:
                 logger.warning(f"Unknown method from Godot: {method}")
 

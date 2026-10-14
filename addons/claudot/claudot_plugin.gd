@@ -11,6 +11,7 @@ const HTTP_SERVER_SCRIPT = preload("res://addons/claudot/network/http_server.gd"
 const HTTP_BRIDGE_HANDLER_SCRIPT = preload("res://addons/claudot/mcp/http_bridge_handler.gd")
 const DEBUGGER_PLUGIN_SCRIPT = preload("res://addons/claudot/debugger/debugger_capture_plugin.gd")
 const BRIDGE_LAUNCHER_SCRIPT = preload("res://addons/claudot/network/bridge_launcher.gd")
+const UPDATE_CHECKER_SCRIPT = preload("res://addons/claudot/network/update_checker.gd")
 const FIRST_RUN_SETTING = "claudot/first_run_shown"
 
 var tcp_client: Node = null
@@ -21,6 +22,7 @@ var bridge_handler: Node = null
 var debugger_plugin: EditorDebuggerPlugin = null
 var bottom_panel_button: Button = null
 var bridge_launcher: Node = null
+var update_checker: Node = null
 
 
 func _enter_tree() -> void:
@@ -69,6 +71,11 @@ func _enter_tree() -> void:
 	# Signal wiring to chat_panel must be deferred (chat_panel may not be ready yet)
 	call_deferred("_setup_bridge_launcher")
 
+	# Step 9: Create release checker (daily GitHub check; wired to chat panel in _setup_connections)
+	update_checker = UPDATE_CHECKER_SCRIPT.new()
+	update_checker.name = "ClaudotUpdateChecker"
+	add_child(update_checker)
+
 	print("[Claudot] Ready")
 
 
@@ -86,6 +93,9 @@ func _setup_connections() -> void:
 		chat_panel.setup_context(self)
 		if bridge_launcher:
 			chat_panel.setup_bridge_launcher(bridge_launcher)
+		if update_checker:
+			chat_panel.setup_update_checker(update_checker)
+			update_checker.check()  # No-op unless auto-check is on and a day has passed
 
 	# Wire interactive input signals (Phase 25: INPT-01 through INPT-06)
 	if bridge_handler and bridge_handler.scene_tools and chat_panel and chat_panel.conversation_tab:
@@ -561,6 +571,10 @@ func _exit_tree() -> void:
 		bridge_launcher.stop()
 		bridge_launcher.queue_free()
 		bridge_launcher = null
+
+	if update_checker:
+		update_checker.queue_free()
+		update_checker = null
 
 	# Remove output capture autoload (registered in Step 6 -- remove first, reverse order)
 	remove_autoload_singleton("OutputCapture")
