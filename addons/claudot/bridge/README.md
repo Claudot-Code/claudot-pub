@@ -18,8 +18,8 @@ URL, app attribution headers, and usage accounting — OpenRouter's per-request
 The `anthropic` backend fully supports **Claude Opus 5.5** (the default),
 **Sonnet 5.5**, and **Haiku 5.5** (adaptive thinking, 1M context, cache reads at
 5% of input; Haiku 5.5 switches to its higher rate tier for prompts over 100K
-tokens) and **Claude Fable 5.1** / **Fable 5** (always-on thinking, refusal stop
-reason, 1M context, discounted cache reads on 5.1), as well as Opus 5,
+tokens) and **Claude Fable 5.2** / **Fable 5.1** / **Fable 5** (always-on thinking,
+refusal stop reason, 1M context, discounted cache reads on 5.2 and 5.1), as well as Opus 5,
 Sonnet 5, Opus 4.8/4.7/4.6, Sonnet 4.6, and Haiku 4.5, with prompt caching
 enabled for cost efficiency. Opus 5.5 requests pin `output_config.effort` to
 `high` (the model's own default is `medium`).

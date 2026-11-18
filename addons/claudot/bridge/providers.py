@@ -8,7 +8,8 @@ the bring-your-own-API-key alternatives:
 - AnthropicAPIProvider  — Anthropic Messages API over raw HTTP (httpx).
   Supports the current lineup — Claude Opus 5.5, Sonnet 5.5, Haiku 5.5
   (adaptive thinking, 1M context; Haiku 5.5 priced in two prompt-size tiers)
-  and Claude Fable/Mythos 5.1 (always-on thinking, refusal stop reason) —
+  and Claude Fable/Mythos 5.2 and 5.1 (always-on thinking, refusal stop
+  reason) —
   plus the earlier Fable 5, Opus/Sonnet 5 and 4.x families.
 - OpenAICompatProvider  — any /chat/completions endpoint (OpenAI, Ollama,
   Gemini's compat endpoint, ...) via a configurable base URL.
@@ -47,7 +48,8 @@ ANTHROPIC_VERSION = "2023-06-01"
 MAX_TOOL_ITERATIONS = 25
 
 # Claude model catalog: context window, USD per MTok in/out, thinking config.
-# Rows are ordered newest-first: Opus 5.5, Fable/Mythos 5.1, Sonnet 5.5,
+# Rows are ordered newest-first: Fable/Mythos 5.2, Opus 5.5, Fable/Mythos 5.1,
+# Sonnet 5.5,
 # Haiku 5.5, then earlier releases.
 # thinking: "omit"     — never send a thinking param (Fable/Mythos: always-on; Haiku 4.5: unsupported)
 #           "adaptive" — send {"type": "adaptive"} (Opus 5.5 is always-on but
@@ -55,7 +57,7 @@ MAX_TOOL_ITERATIONS = 25
 # cache_read: optional USD per MTok for cache-read input tokens. When absent it
 #   defaults to 10% of the model's input rate (Anthropic's standard cache-read
 #   discount). The 5.5 models price cache reads at 5% of input and Fable/Mythos
-#   5.1 at 2.5%, so they set it explicitly. See _cache_read_rate().
+#   5.2 / 5.1 at 2.5%, so they set it explicitly. See _cache_read_rate().
 # over_100k: optional {"in", "out", "cache_read"} rates applied to a request
 #   whose prompt (input + cache read + cache write tokens) exceeds 100,000
 #   tokens. Haiku 5.5 is tiered this way. See _rates_for_request().
@@ -64,6 +66,8 @@ MAX_TOOL_ITERATIONS = 25
 #   the Opus 4.8 default it replaces.
 _HAIKU_5_5_OVER_100K = {"in": 0.5, "out": 2.5, "cache_read": 0.05}
 CLAUDE_MODELS = {
+    "claude-fable-5-2":  {"context": 1_000_000, "in": 8.0,  "out": 40.0, "thinking": "omit", "cache_read": 0.20},
+    "claude-mythos-5-2": {"context": 1_000_000, "in": 8.0,  "out": 40.0, "thinking": "omit", "cache_read": 0.20},
     "claude-opus-5-5":   {"context": 1_000_000, "in": 4.0,  "out": 20.0, "thinking": "adaptive", "cache_read": 0.20,
                           "effort": "high"},
     "claude-fable-5-1":  {"context": 1_000_000, "in": 10.0, "out": 50.0, "thinking": "omit", "cache_read": 0.25},
@@ -84,13 +88,16 @@ CLAUDE_MODELS = {
 
 # Prefix fallbacks for model IDs not in the catalog (future releases, dated IDs).
 # Ordered — first matching prefix wins — so the most specific variants must come
-# first: "claude-fable-5-1" ahead of "claude-fable" so a dated/suffixed 5.1 id
-# like "claude-fable-5-1-20260901" keeps its 2.5% cache-read rate, and
+# first: "claude-fable-5-2" / "claude-fable-5-1" ahead of "claude-fable" so a
+# dated/suffixed id like "claude-fable-5-1-20260901" keeps its own pricing and
+# 2.5% cache-read rate, and
 # "claude-opus-5-5" / "claude-sonnet-5-5" ahead of "claude-opus-5" /
 # "claude-sonnet-5" so e.g. "claude-opus-5-5-20260922" gets 5.5 pricing (and
 # the Opus 5.5 effort pin) rather than Opus 5 pricing. "claude-haiku-5" (5.5
 # tiered pricing) must precede "claude-haiku-4".
 CLAUDE_PREFIX_DEFAULTS = [
+    ("claude-fable-5-2", {"context": 1_000_000, "in": 8.0, "out": 40.0, "thinking": "omit", "cache_read": 0.20}),
+    ("claude-mythos-5-2", {"context": 1_000_000, "in": 8.0, "out": 40.0, "thinking": "omit", "cache_read": 0.20}),
     ("claude-opus-5-5", {"context": 1_000_000, "in": 4.0,  "out": 20.0, "thinking": "adaptive", "cache_read": 0.20,
                          "effort": "high"}),
     ("claude-fable-5-1", {"context": 1_000_000, "in": 10.0, "out": 50.0, "thinking": "omit", "cache_read": 0.25}),

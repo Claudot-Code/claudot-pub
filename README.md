@@ -2,7 +2,7 @@
 
 **AI integration for the Godot editor.** Inspect scenes, modify nodes, run your game, capture screenshots, and chat with AI -- all without leaving the editor.
 
-Built around Claude Code, with additional support for the **OpenAI Codex CLI** (drive GPT/Codex models with your ChatGPT sign-in) and bring-your-own-API-key access to the Anthropic API (including **Claude Opus 5.5**, **Sonnet 5.5**, **Haiku 5.5** and **Claude Fable 5.1**), OpenAI, **OpenRouter** (hundreds of models with one key), and any OpenAI-compatible endpoint (Ollama, LM Studio, ...).
+Built around Claude Code, with additional support for the **OpenAI Codex CLI** (drive GPT/Codex models with your ChatGPT sign-in) and bring-your-own-API-key access to the Anthropic API (including **Claude Opus 5.5**, **Sonnet 5.5**, **Haiku 5.5** and **Claude Fable 5.2**), OpenAI, **OpenRouter** (hundreds of models with one key), and any OpenAI-compatible endpoint (Ollama, LM Studio, ...).
 
 ![Claudot in the Godot editor](claudot_ui_examples/editor_screenshot.png)
 
@@ -86,18 +86,18 @@ Click **Settings** in the info bar to choose how the chat panel talks to an AI m
 
 | Provider | Auth | Capabilities |
 |---|---|---|
-| **Claude Code** (default) | Your Claude subscription login (`claude` CLI). An Anthropic API key may optionally be supplied and takes precedence. Newest models (e.g. **Claude Opus 5.5** / **Haiku 5.5**) require Claude Code 2.1.293 or newer — update it if the model is unavailable. | Everything: file edits, bash, all 20 Godot MCP tools |
-| **Codex** | Your ChatGPT sign-in via the OpenAI Codex CLI — `npm install -g @openai/codex`, then `codex login` once. An OpenAI API key may optionally be supplied for API billing instead. Newest models (e.g. **GPT-6.1 Sol**) need an up-to-date CLI — run `npm update -g @openai/codex`. | Everything: file edits, sandboxed shell commands, all Godot scene tools via MCP |
+| **Claude Code** (default) | Your Claude subscription login (`claude` CLI). An Anthropic API key may optionally be supplied and takes precedence. Newest models (e.g. **Claude Fable 5.2**) require an up-to-date Claude Code — update it if the model is unavailable. | Everything: file edits, bash, all 20 Godot MCP tools |
+| **Codex** | Your ChatGPT sign-in via the OpenAI Codex CLI — `npm install -g @openai/codex`, then `codex login` once. An OpenAI API key may optionally be supplied for API billing instead. Newest models (e.g. **GPT-6.2 Sol** / **GPT-6.2 Astra**) need an up-to-date CLI — run `npm update -g @openai/codex`. | Everything: file edits, sandboxed shell commands, all Godot scene tools via MCP |
 | **Anthropic API** | API key from [console.anthropic.com](https://console.anthropic.com) | Chat + 16 Godot scene/docs tools (no file editing) |
 | **OpenAI API** | API key from [platform.openai.com](https://platform.openai.com) | Chat + 16 Godot scene/docs tools (no file editing) |
 | **OpenRouter** | API key from [openrouter.ai/keys](https://openrouter.ai/keys) — one key for hundreds of models (`vendor/model` IDs) | Chat + 16 Godot scene/docs tools (no file editing), with real per-message cost reporting |
 | **Custom OpenAI-compatible** | Base URL + optional key — works with Ollama (`http://localhost:11434/v1`), LM Studio, etc. | Chat + 16 Godot scene/docs tools (no file editing) |
 
-Available Claude models include **Claude Opus 5.5** (recommended default), **Claude Fable 5.1** (Anthropic's most capable model), **Sonnet 5.5**, and **Haiku 5.5**, plus older models (Opus 5, Opus 4.8/4.7/4.6, Fable 5, Sonnet 5, Sonnet 4.6, and Haiku 4.5). A quick model switcher lives directly in the info bar; the Settings dialog also accepts any custom model ID. Using the newest models through the Claude Code provider requires an up-to-date Claude Code CLI (2.1.290+ for Opus/Sonnet 5.5, 2.1.293+ for Haiku 5.5) — update Claude Code if a model is unavailable.
+Available Claude models include **Claude Opus 5.5** (recommended default), **Claude Fable 5.2** (Anthropic's most capable model), **Sonnet 5.5**, and **Haiku 5.5**, plus older models (Fable 5.1, Opus 5, Opus 4.8/4.7/4.6, Fable 5, Sonnet 5, Sonnet 4.6, and Haiku 4.5). A quick model switcher lives directly in the info bar; the Settings dialog also accepts any custom model ID. Using the newest models through the Claude Code provider requires an up-to-date Claude Code CLI (2.1.290+ for Opus/Sonnet 5.5, 2.1.293+ for Haiku 5.5, newer still for Fable 5.2) — update Claude Code if a model is unavailable.
 
-The OpenRouter provider ships with a curated list of popular models (Claude Sonnet 5.5 / Opus 5.5 / Haiku 5.5 / Fable 5.1 / Opus 5, GPT-6 Astra / 6.1 Sol / 6 Luna, GPT-5.6 Sol, Gemini 3.8 Flash, Mistral Large 4, Grok 4.7, DeepSeek V4 Pro / V4.1 Flash, Kimi K3, GLM 5.3, MiniMax M3, Qwen3 Coder, MiMo V2.6 Pro, Nemotron 3 Ultra) and a **Fetch all** button that pulls the full live catalog from openrouter.ai so you can filter and pick any model. If you previously used OpenRouter through the Custom provider, your key and model are migrated automatically.
+The OpenRouter provider ships with a curated list of popular models (Claude Sonnet 5.5 / Opus 5.5 / Haiku 5.5 / Fable 5.2, GPT-6.2 Astra / 6.2 Sol / 6.1 Terra / 6 Luna, Gemini 4 Carbon / 4 Hydrogen / 3.8 Flash, Mistral Large 4, Grok 4.7, DeepSeek V4 Pro / V4.1 Flash, Kimi K3.1 Pro, GLM 5.3, MiniMax M3, Qwen4 Max, Qwen3 Coder, MiMo V2.6 Pro, Nemotron 3 Ultra) and a **Fetch all** button that pulls the full live catalog from openrouter.ai so you can filter and pick any model. If you previously used OpenRouter through the Custom provider, your key and model are migrated automatically.
 
-GPT and Codex models are also available **without the Codex CLI** through the OpenRouter provider (`openai/gpt-6.1-sol`, `openai/gpt-6-astra`, `openai/gpt-6-luna`, ...) — handy if you'd rather use an OpenRouter key than a ChatGPT subscription. Note that OpenRouter access is chat + scene tools only (no file editing); the Codex provider is what unlocks file edits and shell commands.
+GPT and Codex models are also available **without the Codex CLI** through the OpenRouter provider (`openai/gpt-6.2-sol`, `openai/gpt-6.2-astra`, `openai/gpt-6-luna`, ...) — handy if you'd rather use an OpenRouter key than a ChatGPT subscription. Note that OpenRouter access is chat + scene tools only (no file editing); the Codex provider is what unlocks file edits and shell commands.
 
 **API keys are stored in your Godot editor settings** — outside the project directory, so they can never be committed to version control.
 

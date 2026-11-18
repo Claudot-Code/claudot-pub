@@ -329,6 +329,18 @@ async def main() -> int:
     ok &= expect(providers._cache_read_rate(providers._UNKNOWN_CLAUDE) is None,
                  "cache_read_rate is None when input rate unknown")
 
+    # Fable / Mythos 5.2: cheaper than 5.1, cache reads at 2.5% of input
+    fable52 = providers.claude_model_info("claude-fable-5-2")
+    ok &= expect(fable52["in"] == 8.0 and fable52["out"] == 40.0, "fable-5-2 in/out pricing")
+    ok &= expect(fable52["context"] == 1_000_000, "fable-5-2 context 1M")
+    ok &= expect(fable52["thinking"] == "omit", "fable-5-2 omits thinking param")
+    ok &= expect(fable52.get("cache_read") == 0.20, "fable-5-2 explicit cache_read rate")
+    ok &= expect(providers.claude_model_info("claude-mythos-5-2") == fable52, "mythos-5-2 matches fable-5-2")
+    ok &= expect(providers.claude_model_info("claude-fable-5-2-20261109")["in"] == 8.0,
+                 "dated fable-5-2 resolves to 5.2 rates, not the generic claude-fable fallback")
+    ok &= expect(providers.claude_model_info("claude-mythos-5-2-x").get("cache_read") == 0.20,
+                 "suffixed mythos-5-2 resolves to 5.2 rates")
+
     # 5.5 lineup
     opus55 = providers.claude_model_info("claude-opus-5-5")
     ok &= expect(opus55["in"] == 4.0 and opus55["out"] == 20.0, "opus-5-5 in/out pricing")
@@ -349,8 +361,8 @@ async def main() -> int:
     ok &= expect(haiku55["thinking"] == "adaptive", "haiku-5-5 adaptive thinking")
     ok &= expect(haiku55.get("over_100k") == {"in": 0.5, "out": 2.5, "cache_read": 0.05},
                  "haiku-5-5 over-100K tier rates")
-    ok &= expect(list(providers.CLAUDE_MODELS)[:5] == [
-        "claude-opus-5-5", "claude-fable-5-1", "claude-mythos-5-1", "claude-sonnet-5-5", "claude-haiku-5-5"],
+    ok &= expect(list(providers.CLAUDE_MODELS)[:7] == [
+        "claude-fable-5-2", "claude-mythos-5-2", "claude-opus-5-5", "claude-fable-5-1", "claude-mythos-5-1", "claude-sonnet-5-5", "claude-haiku-5-5"],
         "catalog reads newest-first")
     # Prefix order: dated/suffixed 5.5 ids must not fall through to the 5 rows.
     dated_opus = providers.claude_model_info("claude-opus-5-5-20260922")
