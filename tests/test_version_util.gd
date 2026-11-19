@@ -154,7 +154,11 @@ func test_parse_release_json_edge_cases() -> void:
 
 
 func test_update_checker_headless() -> void:
-	eq(UpdateChecker.get_installed_version(), "3.1.0-beta", "reads plugin.cfg")
+	var cfg := ConfigFile.new()
+	cfg.load("res://addons/claudot/plugin.cfg")
+	var expected := String(cfg.get_value("plugin", "version", ""))
+	eq(expected != "", true, "plugin.cfg has a version")
+	eq(UpdateChecker.get_installed_version(), expected, "reads plugin.cfg")
 	eq(UpdateChecker.is_auto_check_enabled(), true, "auto_check default headless")
 	eq(UpdateChecker.get_skipped_tag(), "", "skipped default headless")
 	UpdateChecker.skip_tag("v9.9")  # no-op headless, must not crash

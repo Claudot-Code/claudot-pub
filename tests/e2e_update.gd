@@ -91,7 +91,7 @@ func _run() -> void:
 	var installer_present := FileAccess.file_exists("res://addons/claudot/network/update_installer.gd")
 	var stale_gone := not FileAccess.file_exists("res://addons/claudot/STALE_FILE.txt")
 	print("[E2E] after: live=%s backup=%s record=%s staging_gone=%s env_kept=%s installer_present=%s stale_gone=%s" % [after, backup_version, has_record, staging_gone, env_kept, installer_present, stale_gone])
-	var passed := _ok and after == "3.2.0-beta" and backup_version == before and has_record and staging_gone and env_kept and installer_present and stale_gone
+	var passed := _ok and after == String(_info.version) and backup_version == before and has_record and staging_gone and env_kept and installer_present and stale_gone
 	print("[E2E] ", "PASS" if passed else "FAIL")
 	quit(0 if passed else 1)
 
